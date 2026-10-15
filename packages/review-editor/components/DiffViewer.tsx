@@ -695,45 +695,51 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     return retryScrollToSearchMatch(containerRef.current, activeSearchMatch);
   }, [activeSearchMatch, filePath, diffStyle, diffOverflow, diffIndicators, lineDiffType, disableLineNumbers, disableBackground, expandUnchanged, viewport, markdownPreviewEnabled]);
 
-  // Scroll to the selected line range — drives "jump to entity" from semantic-diff
-  // clicks and AI "scroll to lines". Mirrors the scroll-to-annotation behavior used
-  // by sidebar comments (center the target, smooth). pierre tags the selected rows
-  // with `[data-selected-line]` inside the diff shadow DOM once it applies
-  // `selectedLines`, so we retry across frames until it appears.
-  //
-  // Only scroll when the target is off-screen: a manual drag-select also sets
-  // pendingSelection, but its lines are by definition already visible, so we leave
-  // the view untouched and avoid yanking it on every selection.
+  // Keep a requested line in view through asynchronous row replacement. WebKit
+  // can cancel a row's smooth scroll or reset its offset while highlighting.
+  // Stop following on user input so navigation never fights manual scrolling.
   useEffect(() => {
     if (!pendingSelection || !containerRef.current || markdownPreviewEnabled) return;
     const container = containerRef.current;
     let cancelled = false;
-    let attempts = 0;
-    const MAX_ATTEMPTS = 30;
-
+    let raf = 0;
+    const roots = getSearchRoots(container);
     const tryScroll = () => {
       if (cancelled) return;
-      const target = getSearchRoots(container)
+      const target = roots
         .map((root) => (root as ParentNode).querySelector?.('[data-selected-line]') ?? null)
         .find((el): el is Element => el != null);
-      if (target) {
-        const targetRect = target.getBoundingClientRect();
-        const viewRect = container.getBoundingClientRect();
-        const fullyVisible = targetRect.top >= viewRect.top && targetRect.bottom <= viewRect.bottom;
-        if (!fullyVisible) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-        }
-        return;
+      if (!target) return;
+      const targetRect = target.getBoundingClientRect();
+      const viewRect = container.getBoundingClientRect();
+      if (targetRect.height > 0 && viewRect.height > 0
+        && (targetRect.top < viewRect.top || targetRect.bottom > viewRect.bottom)) {
+        target.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' });
       }
-      attempts += 1;
-      if (attempts < MAX_ATTEMPTS) requestAnimationFrame(tryScroll);
     };
-
-    const raf = requestAnimationFrame(tryScroll);
-    return () => {
+    const schedule = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(tryScroll);
+    };
+    const observer = new MutationObserver(schedule);
+    const stop = () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      observer.disconnect();
+      container.removeEventListener('scroll', schedule);
+      for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+        window.removeEventListener(event, stop, true);
+      }
     };
+    for (const root of roots) {
+      if (root instanceof Node) observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-selected-line'] });
+    }
+    container.addEventListener('scroll', schedule, { passive: true });
+    for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+      window.addEventListener(event, stop, { capture: true, passive: true });
+    }
+    schedule();
+    return stop;
   }, [pendingSelection, filePath, augmentedDiff, viewport, markdownPreviewEnabled]);
 
   // Map annotations to @pierre/diffs format

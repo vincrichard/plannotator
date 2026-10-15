@@ -1,5 +1,5 @@
 /** Real desktop review, isolated repository/data directory; never opens or replaces a user's session. */
-import { chromium, firefox, expect, test, type Locator, type Page } from '@playwright/test';
+import { chromium, firefox, webkit, expect, test, type Locator, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -34,6 +34,11 @@ async function review(page: Page, staged = false, contextLines = 60) {
   writeFileSync(join(repo, 'c-distant.ts'), distant.replace('setting = 1', 'setting = 2').replace('widget(4)', contextLines > 60 ? 'widget(5)' : 'widget(4)'));
   writeFileSync(join(repo, 'a-main.ts'), "import { widget } from './helper';\nexport const main = widget(10);\n");
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const next = widget(2);\nexport const extra = widget(3);\n");
+  if (addedReference) {
+    writeFileSync(join(repo, 'd-added.ts'), Array.from({ length: 1000 }, (_, i) =>
+      i === 239 ? 'const result = widget(7);\n' : `export const row${i} = { name: 'cold reference row ${i}', value: ${i}, enabled: true };\n`).join(''));
+    git('add', 'd-added.ts');
+  }
   if (staged) {
     git('add', '.');
     // rg sees this working tree; comments must use the index's original coordinates/content.
@@ -332,5 +337,64 @@ test('references take most of the dock and close shortcuts target the focused re
     expect(metaCancelled).toBe(true);
     await expect(side).toHaveCount(0);
     expect((await page.request.get(`${session.url}/api/diff`)).ok()).toBe(true);
+  } finally { await session.close(); }
+});
+
+
+test('WebKit reaches a cold added-file reference without a second click', async () => {
+  const browser = await webkit.launch({ args: [] });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 650 } });
+    const session = await review(page, false, 60, true);
+    try {
+      await openReferences(page);
+      await expect(page.locator('[data-reference-file="helper.ts"] [data-line="1"]').first()).toBeVisible();
+      await choose(page, ':240 const result = widget(7);');
+      const side = page.locator('[data-reference-file="d-added.ts"]');
+      // Let worker highlighting replace the initial rows; do not hover or scroll the code.
+      await expect(side.locator('[data-line="240"] [data-char]').filter({ hasText: 'widget' })).toBeVisible();
+      await page.waitForTimeout(1000);
+      await expect.poll(() => side.locator('[data-line="240"]').first().evaluate(el => {
+        const bounds = el.getRootNode() instanceof ShadowRoot
+          ? (el.getRootNode() as ShadowRoot).host.closest('[data-reference-file]')?.getBoundingClientRect()
+          : null;
+        const line = el.getBoundingClientRect();
+        return !!bounds && line.height > 0 && line.top >= bounds.top && line.bottom <= bounds.bottom;
+      })).toBe(true);
+    } finally { await session.close(); }
+  } finally { await browser.close(); }
+});
+
+
+test('line jumps recover interrupted rendering and yield to manual scrolling', async ({ page }) => {
+  const session = await review(page, false, 600);
+  try {
+    await openReferences(page);
+    await choose(page, ':603 export const distant = widget(5);');
+    const side = page.locator('[data-reference-file="c-distant.ts"]');
+    const line = side.locator('[data-additions] [data-line="603"]');
+    await expect(line).toBeInViewport();
+    await page.waitForTimeout(1000);
+    // Model the measured WebKit failure: row replacement interrupts a jump
+    // at a nonzero offset. The older zero-reset guardian cannot recover it.
+    const interrupt = () => line.evaluate(el => {
+      let viewport: Element | null = el;
+      while (viewport && getComputedStyle(viewport).overflowY !== 'auto') {
+        viewport = viewport.parentElement ?? (viewport.getRootNode() as ShadowRoot).host ?? null;
+      }
+      if (!viewport) throw new Error('Reference viewport missing');
+      el.replaceWith(el.cloneNode(true));
+      viewport.scrollTop -= 900;
+      viewport.dispatchEvent(new Event('scroll'));
+    });
+    await interrupt();
+    await expect(line).toBeInViewport();
+    const bounds = await side.boundingBox();
+    await page.mouse.move(bounds!.x + 100, bounds!.y + 100);
+    await page.mouse.wheel(0, -900);
+    await expect(line).not.toBeInViewport();
+    await interrupt();
+    await page.waitForTimeout(300);
+    await expect(line).not.toBeInViewport();
   } finally { await session.close(); }
 });
