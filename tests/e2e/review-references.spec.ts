@@ -1,5 +1,5 @@
 /** Real desktop review, isolated repository/data directory; never opens or replaces a user's session. */
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { chromium, firefox, expect, test, type Locator, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false) {
+async function review(page: Page, staged = false, contextLines = 60) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -27,11 +27,11 @@ async function review(page: Page, staged = false) {
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const previous = widget(1);\n");
   writeFileSync(join(repo, 'helper.ts'), 'export function widget(value: number) {\n  return value * 2;\n}\n');
   const distant = "import { widget } from './helper';\nexport const setting = 1;\n" +
-    Array.from({ length: 60 }, (_, i) => `// context ${i}\n`).join('') + 'export const distant = widget(4);\n';
+    Array.from({ length: contextLines }, (_, i) => contextLines > 60 && i === 499 ? 'export const middle = widget(6);\n' : `// context ${i}\n`).join('') + 'export const distant = widget(4);\n' + (contextLines > 60 ? Array.from({ length: 400 }, (_, i) => `// tail ${i}\n`).join('') : '');
   writeFileSync(join(repo, 'c-distant.ts'), distant);
   git('add', '.');
   git('commit', '-m', 'base');
-  writeFileSync(join(repo, 'c-distant.ts'), distant.replace('setting = 1', 'setting = 2'));
+  writeFileSync(join(repo, 'c-distant.ts'), distant.replace('setting = 1', 'setting = 2').replace('widget(4)', contextLines > 60 ? 'widget(5)' : 'widget(4)'));
   writeFileSync(join(repo, 'a-main.ts'), "import { widget } from './helper';\nexport const main = widget(10);\n");
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const next = widget(2);\nexport const extra = widget(3);\n");
   if (staged) {
@@ -206,3 +206,40 @@ test('working-tree search locations are checked against staged contents, without
     await page.screenshot({ path: join(proofDir, 'staged-snapshot.png') });
   } finally { await session.close(); }
 });
+
+for (const browserName of ['chromium', 'firefox'] as const) {
+  test.describe(`reference scroll (${browserName})`, () => {
+    test('keeps a distant reference visible after rendering and opening or closing a comment', async () => {
+      const browser = await ({ chromium, firefox }[browserName]).launch();
+      const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+      const session = await review(page, false, 600);
+      try {
+        await openReferences(page);
+        const side = page.locator('[data-reference-file]');
+        await choose(page, ':603 export const distant = widget(5);');
+        await expect(side).toHaveAttribute('data-reference-file', 'c-distant.ts');
+        const line = side.locator('[data-additions] [data-line="603"]');
+        await expect(line).toHaveAttribute('data-selected-line', /.+/);
+        // Full-file rendering can finish after the first successful scroll.
+        await page.waitForTimeout(1000);
+        await expect(line).toBeInViewport();
+        await choose(page, ':502 export const middle = widget(6);');
+        await expect(side.locator('[data-additions] [data-line="502"]')).toBeInViewport();
+        await choose(page, ':603 export const distant = widget(5);');
+        await expect(line).toBeInViewport();
+        // Let the reference jump's smooth scroll finish before testing the composer.
+        await page.waitForTimeout(1000);
+        const top = await line.evaluate(el => el.getBoundingClientRect().top);
+        await line.locator('[data-char]').filter({ hasText: /^widget$/ }).click();
+        await expect(page.getByPlaceholder('Leave feedback...')).toBeVisible();
+        await page.getByPlaceholder('Leave feedback...').fill('keep this draft in place');
+        await expect.poll(() => line.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(top, 0);
+        await page.keyboard.press('Escape');
+        await expect(page.getByPlaceholder('Leave feedback...')).toBeHidden();
+        await expect.poll(() => line.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(top, 0);
+        await selectLine(page, side, 603, 'additions');
+        await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('keep this draft in place');
+      } finally { await session.close(); await browser.close(); }
+    });
+  });
+}

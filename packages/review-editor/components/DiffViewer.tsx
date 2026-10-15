@@ -4,7 +4,7 @@ import { getSingularPatch, processFile } from '@pierre/diffs';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, DiffAnnotationMetadata, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
 import type { DiffTokenEventBaseProps } from '@pierre/diffs';
 import { usePierreTheme } from '../hooks/usePierreTheme';
-import { useFileContents } from '../hooks/useFileContents';
+import { useFileContents, type ReviewFileContents } from '../hooks/useFileContents';
 import { useWorkerPoolThemeSync } from '../workerPool';
 import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { storage } from '@plannotator/ui/utils/storage';
@@ -168,6 +168,8 @@ const PierreDiffContent = React.memo(({
 interface DiffViewerProps {
   patch: string;
   filePath: string;
+  /** References already loads this snapshot before choosing the jump target. */
+  fileContents?: ReviewFileContents | null;
   oldPath?: string;
   /** Change type for the header icon + rename display. */
   status?: import('../types').DiffFileStatus;
@@ -284,6 +286,7 @@ const MarkdownPreviewPending: React.FC = () => (
 export const DiffViewer: React.FC<DiffViewerProps> = ({
   patch,
   filePath,
+  fileContents: suppliedFileContents,
   oldPath,
   status,
   reviewBase,
@@ -443,9 +446,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     oldPath,
     reviewBase,
     reviewSnapshotId,
-    enabled: contextExpansionAvailable,
+    enabled: contextExpansionAvailable && suppliedFileContents === undefined,
   });
-  const { fileContents } = fileContentsResult;
+  const fileContents = suppliedFileContents === undefined ? fileContentsResult.fileContents : suppliedFileContents;
   // The document the preview shows: the new file, or the old one for a
   // deletion. Null when that path is not Markdown (incl. a rename away from
   // Markdown), so no preview is offered.

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { SelectedLineRange } from '@plannotator/ui/types';
 import type { DiffFile } from '../../types';
+import type { ReviewFileContents } from '../../hooks/useFileContents';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { DiffViewer } from '../../components/DiffViewer';
 import { useReviewState } from '../ReviewStateContext';
@@ -29,7 +30,7 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
 /** The normal review viewer, also used for targets opened in References. */
 export const ReviewFileDiff: React.FC<{
   file: DiffFile;
-  reference?: { target: SelectedLineRange | null; isActive: boolean; unchanged: boolean };
+  reference?: { target: SelectedLineRange | null; isActive: boolean; unchanged: boolean; fileContents: ReviewFileContents | null };
 }> = ({ file, reference }) => {
   const state = useReviewState();
   const [referenceSelection, setReferenceSelection] = useState<SelectedLineRange | null>(null);
@@ -84,6 +85,7 @@ export const ReviewFileDiff: React.FC<{
       <DiffViewer
         patch={file.patch}
         filePath={file.path}
+        fileContents={reference?.fileContents}
         oldPath={file.oldPath}
         status={file.status}
         reviewBase={state.reviewBase}

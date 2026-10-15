@@ -69,9 +69,9 @@ const CodePreview: React.FC<{ target: ReferenceTarget; isActive: boolean }> = ({
         </div>
       )}
       {!changedFile && preview.file && <div className="px-3 py-1 text-xs text-muted-foreground">Unchanged file · review snapshot</div>}
-      {preview.file ? (
+      {!preview.loading && preview.file ? (
         <div className="flex-1 min-h-0">
-          <ReviewFileDiff file={preview.file} reference={{ target: range, isActive, unchanged: !changedFile }} />
+          <ReviewFileDiff file={preview.file} reference={{ target: range, isActive, unchanged: !changedFile, fileContents: preview.fileContents }} />
         </div>
       ) : preview.loading && <div role="status" className="p-3 text-xs text-muted-foreground">Loading reviewed file…</div>}
     </div>
