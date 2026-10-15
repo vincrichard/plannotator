@@ -284,3 +284,53 @@ test('recovers native scroll resets in embedded WebKit without affecting Chromiu
     }
   } finally { await browser.close(); }
 });
+
+test('references take most of the dock and close shortcuts target the focused review tab', async ({ page }) => {
+  const session = await review(page);
+  try {
+    await openReferences(page);
+    const side = page.locator('[data-reference-file]');
+    const panel = page.locator('.dv-groupview').filter({ has: side });
+    const widthFraction = async () => {
+      const bounds = await panel.boundingBox();
+      const parent = await page.locator('.dv-dockview').boundingBox();
+      return bounds!.width / parent!.width;
+    };
+    await expect.poll(widthFraction).toBeGreaterThan(0.65);
+    await expect.poll(widthFraction).toBeLessThan(0.75);
+    const codeBounds = await side.boundingBox();
+    const listBounds = await page.getByLabel('Symbol locations').boundingBox();
+    expect(listBounds!.x).toBeGreaterThanOrEqual(codeBounds!.x + codeBounds!.width - 1);
+    expect(Math.abs(listBounds!.y - codeBounds!.y)).toBeLessThan(2);
+    expect(codeBounds!.height).toBeGreaterThan(600);
+    await page.screenshot({ path: join(proofDir, 'reference-focus.png') });
+    await openReferences(page);
+    await expect.poll(widthFraction).toBeGreaterThan(0.65);
+    await selectLine(page, side, 2, 'unified');
+    await page.getByPlaceholder('Leave feedback...').fill('w');
+    await page.keyboard.press('w');
+    await expect(side).toBeVisible();
+    await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('ww');
+    await page.keyboard.press('Escape');
+    await page.getByLabel('Symbol locations').getByRole('heading', { name: 'Definitions', exact: true }).click();
+    await page.keyboard.press('w');
+    await expect(side).toHaveCount(0);
+    await expect(page.locator('.dv-tab').filter({ hasText: 'All files' })).toBeVisible();
+    await openReferences(page);
+    await expect.poll(widthFraction).toBeGreaterThan(0.65);
+    await page.locator('.dv-tab').filter({ hasText: 'All files' }).click();
+    // Browser chrome may reserve this chord; verify the app handles it when delivered.
+    const cancelled = await page.evaluate(() => !window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'w', code: 'KeyW', ctrlKey: true, bubbles: true, cancelable: true,
+    })));
+    expect(cancelled).toBe(true);
+    await expect(page.locator('.dv-tab').filter({ hasText: 'All files' })).toHaveCount(0);
+    await expect(side).toBeVisible();
+    const metaCancelled = await page.evaluate(() => !window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'w', code: 'KeyW', metaKey: true, bubbles: true, cancelable: true,
+    })));
+    expect(metaCancelled).toBe(true);
+    await expect(side).toHaveCount(0);
+    expect((await page.request.get(`${session.url}/api/diff`)).ok()).toBe(true);
+  } finally { await session.close(); }
+});

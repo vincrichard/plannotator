@@ -65,6 +65,14 @@ export const reviewEditorShortcuts = defineShortcutScope({
       hint: 'Double-tap to switch between platform and agent in PR review mode.',
       displayOrder: 30,
     },
+    closeTab: {
+      description: 'Close focused review tab',
+      bindings: ['Mod+W', 'W'],
+      section: 'Layout',
+      hint: 'Outside text fields and dialogs. Use W when the browser reserves Cmd/Ctrl+W for its own tabs.',
+      preventDefault: true,
+      displayOrder: 5,
+    },
     toggleFileTree: {
       description: 'Toggle file tree',
       bindings: ['Mod+B'],

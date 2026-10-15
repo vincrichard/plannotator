@@ -195,13 +195,22 @@ export const ReviewCodeNavPanel: React.FC<IDockviewPanelProps> = (props) => {
       ref={containerRef}
       tabIndex={-1}
       aria-label="References"
-      className="h-full min-h-0 flex flex-col border-t border-border/50"
+      className="h-full min-h-0 min-w-0 flex border-t border-border/50"
       onKeyDown={event => {
         // Escape in a comment composer belongs to the composer, not the panel.
         if (event.key === 'Escape' && event.target === containerRef.current) props.api.close();
       }}
     >
-      <div className="max-h-[35%] shrink-0 overflow-auto border-b border-border/30" aria-label="Symbol locations">
+      <div className="flex-1 min-h-0 min-w-0">
+        {selectedLocation ? (
+          <CodePreview
+            key={`${selectedLocation.filePath}:${state.snapshotId ?? ''}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}`}
+            target={selectedLocation}
+            isActive={isActive}
+          />
+        ) : <div className="p-3 text-xs text-muted-foreground">Select a reference to review</div>}
+      </div>
+      <div className="w-[28%] min-w-40 max-w-72 shrink-0 overflow-auto border-l border-border/30" aria-label="Symbol locations">
         {codeNavIsLoading ? (
           <div role="status" className="p-3 text-xs text-muted-foreground">Searching for {codeNavActiveSymbol}…</div>
         ) : codeNavResult?.backend === 'unavailable' ? (
@@ -223,15 +232,6 @@ export const ReviewCodeNavPanel: React.FC<IDockviewPanelProps> = (props) => {
             )}
           </>
         )}
-      </div>
-      <div className="flex-1 min-h-0">
-        {selectedLocation ? (
-          <CodePreview
-            key={`${selectedLocation.filePath}:${state.snapshotId ?? ''}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}`}
-            target={selectedLocation}
-            isActive={isActive}
-          />
-        ) : <div className="p-3 text-xs text-muted-foreground">Select a reference to review</div>}
       </div>
     </div>
   );

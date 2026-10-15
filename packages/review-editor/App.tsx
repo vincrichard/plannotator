@@ -112,6 +112,7 @@ import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotat
 import { AGENT_CLOSED_TITLE, agentClosedSubtitle } from '@plannotator/ui/utils/agentClosed';
 import { useUndoHistory } from '@plannotator/ui/hooks/useUndoHistory';
 import { useHistoryShortcuts } from '@plannotator/ui/shortcuts';
+import { useReviewEditorShortcuts } from './shortcuts';
 import {
   applyCollectionMutations,
   hasActiveHistoryOverlay,
@@ -1382,6 +1383,7 @@ const ReviewApp: React.FC = () => {
       existing.api.updateParameters({ annotationId: undefined });
       existing.api.setTitle(`References: ${request.symbol}`);
       existing.api.setActive();
+      existing.api.setSize({ width: Math.round(dockApi.width * 0.7) });
     } else {
       const refPanel = isCallFlowActive
         ? REVIEW_CALL_FLOW_PANEL_ID
@@ -1394,11 +1396,9 @@ const ReviewApp: React.FC = () => {
         id: REVIEW_CODE_NAV_PANEL_ID,
         component: REVIEW_PANEL_TYPES.CODE_NAV,
         title: `References: ${request.symbol}`,
-        // Open beside the code, not under it: a below-split steals vertical
-        // room from the diff being read, and the references list is a narrow
-        // column that reads naturally at the right edge.
+        // Give the reference room for review while keeping the source beside it.
         position: { direction: 'right', referencePanel: refPanel },
-        initialWidth: 520,
+        initialWidth: Math.round(dockApi.width * 0.7),
       });
     }
   }, [closeTokenHover, codeNav.resolve, dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive, gitContext, agentCwd]);
@@ -2193,6 +2193,17 @@ const ReviewApp: React.FC = () => {
     if (prMetadata && !isCompactTouchLayout) openPROverviewPanel();
     else openAllFilesPanel();
   }, [dockApi, files, isCompactTouchLayout, openAllFilesPanel, openPROverviewPanel, prMetadata]);
+
+  useReviewEditorShortcuts({
+    handlers: {
+      closeTab: {
+        when: (event) => !event.defaultPrevented && !event.repeat
+          && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
+          && !guideOpen && !!dockApi?.activePanel,
+        handle: () => dockApi?.activePanel?.api.close(),
+      },
+    },
+  });
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -3862,7 +3873,7 @@ const ReviewApp: React.FC = () => {
           title: 'References',
           params: { annotationId: id },
           position: { direction: 'right' },
-          initialWidth: 520,
+          initialWidth: Math.round(dockApi.width * 0.7),
         });
       }
       setSelectedAnnotationId(id);
