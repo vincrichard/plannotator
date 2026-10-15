@@ -578,7 +578,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   useEffect(() => {
     if (!viewport) return;
     const ua = navigator.userAgent;
-    const isWebKit = ua.includes('Safari') && !ua.includes('Chrome');
+    // WKWebView embeds omit Safari from their user agent.
+    const isWebKit = ua.includes('AppleWebKit') && !ua.includes('Chrome');
     if (!isWebKit) return;
 
     let lastGoodST = 0;

@@ -243,3 +243,44 @@ for (const browserName of ['chromium', 'firefox'] as const) {
     });
   });
 }
+
+// The real Mac WKWebView resets its shadow-DOM scroller natively during repaint.
+// Simulate that zero-offset event here to guard recovery for its Safari-less UA;
+// this is a deterministic guardian regression, not WebKit engine coverage.
+test('recovers native scroll resets in embedded WebKit without affecting Chromium', async () => {
+  const browser = await chromium.launch();
+  try {
+    for (const embeddedWebKit of [true, false]) {
+      const page = await browser.newPage({
+        viewport: { width: 1600, height: 1000 },
+        ...(embeddedWebKit ? { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)' } : {}),
+      });
+      const session = await review(page, false, 600);
+      try {
+        if (embeddedWebKit) {
+          await page.locator('diffs-container').first().locator('[data-additions] [data-line="2"] [data-char]').filter({ hasText: /^widget$/ }).click({ modifiers: ['Meta'] });
+          await expect(page.getByLabel('Symbol locations')).toBeVisible();
+        } else {
+          await openReferences(page);
+        }
+        await choose(page, ':603 export const distant = widget(5);');
+        const line = page.locator('[data-reference-file] [data-additions] [data-line="603"]');
+        await expect(line).toBeInViewport();
+        await page.waitForTimeout(1000);
+        const result = await line.evaluate(el => {
+          let viewport: Element | null = el;
+          while (viewport && !(viewport.scrollHeight > viewport.clientHeight && getComputedStyle(viewport).overflowY === 'auto')) {
+            viewport = viewport.parentElement ?? (viewport.getRootNode() as ShadowRoot).host ?? null;
+          }
+          if (!viewport) throw new Error('Reference scroll viewport missing');
+          const before = viewport.scrollTop;
+          viewport.scrollTop = 0;
+          viewport.dispatchEvent(new Event('scroll'));
+          return { before, after: viewport.scrollTop };
+        });
+        expect(result.before).toBeGreaterThan(200);
+        expect(result.after).toBe(embeddedWebKit ? result.before : 0);
+      } finally { await session.close(); await page.close(); }
+    }
+  } finally { await browser.close(); }
+});
