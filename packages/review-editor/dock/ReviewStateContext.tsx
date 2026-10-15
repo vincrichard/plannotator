@@ -291,6 +291,8 @@ export interface ReviewState {
     filePath: string,
   ) => void;
   onTokenHoverLeave?: () => void;
+  codeNavTarget: import('../hooks/useCodeNav').ReferenceTarget | null;
+  onSelectCodeNavTarget: (target: import('../hooks/useCodeNav').ReferenceTarget) => void;
   codeNavResult: import('@plannotator/shared/code-nav').CodeNavResponse | null;
   codeNavIsLoading: boolean;
   codeNavActiveSymbol: string | null;

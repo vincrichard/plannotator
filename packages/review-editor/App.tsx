@@ -1323,7 +1323,7 @@ const ReviewApp: React.FC = () => {
     sessionId: aiSessionId,
   } = aiChat;
 
-  const codeNav = useCodeNav();
+  const codeNav = useCodeNav(snapshotId);
   // The other half of the held-modifier gesture. The diff views paint
   // `pn-token-nav` from the pointer ENTER event, which covers "hold the key,
   // then move onto a symbol" but neither half of the gesture modifier mode
@@ -1383,7 +1383,6 @@ const ReviewApp: React.FC = () => {
       existing.api.updateParameters({ annotationId: undefined });
       existing.api.setTitle(`References: ${request.symbol}`);
       existing.api.setActive();
-      existing.api.setSize({ width: Math.round(dockApi.width * 0.7) });
     } else {
       const refPanel = isCallFlowActive
         ? REVIEW_CALL_FLOW_PANEL_ID
@@ -2194,8 +2193,26 @@ const ReviewApp: React.FC = () => {
     else openAllFilesPanel();
   }, [dockApi, files, isCompactTouchLayout, openAllFilesPanel, openPROverviewPanel, prMetadata]);
 
+  const canNavigateReferences = (event: KeyboardEvent) => !event.defaultPrevented && !event.repeat
+    && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
+    && !guideOpen && !!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
+  const navigateReferences = (direction: -1 | 1) => {
+    closeTokenHover();
+    dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)?.api.updateParameters({ annotationId: undefined });
+    dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)?.api.setActive();
+    codeNav.go(direction);
+  };
+
   useReviewEditorShortcuts({
     handlers: {
+      referenceBack: {
+        when: (event) => canNavigateReferences(event),
+        handle: () => { if (codeNav.canGoBack) navigateReferences(-1); },
+      },
+      referenceForward: {
+        when: (event) => canNavigateReferences(event),
+        handle: () => { if (codeNav.canGoForward) navigateReferences(1); },
+      },
       closeTab: {
         when: (event) => !event.defaultPrevented && !event.repeat
           && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
@@ -4077,6 +4094,8 @@ const ReviewApp: React.FC = () => {
     onCodeNavRequest: canUseLiveWorkspaceActions ? handleCodeNavRequest : undefined,
     onTokenHoverEnter: tokenHoverEnabled ? handleTokenHoverEnter : undefined,
     onTokenHoverLeave: tokenHoverEnabled ? tokenHover.onTokenHoverLeave : undefined,
+    codeNavTarget: codeNav.target,
+    onSelectCodeNavTarget: codeNav.select,
     codeNavResult: codeNav.result,
     codeNavIsLoading: codeNav.isLoading,
     codeNavActiveSymbol: codeNav.activeSymbol,
@@ -4106,7 +4125,7 @@ const ReviewApp: React.FC = () => {
     handleSemanticDiffUnavailable, handleSemanticDiffLoadError, handleSemanticDiffLoadSuccess, handleAddAnnotationForFile,
     callFlowAvailable, callFlowAdvert, callFlowAnalysis, retryCallFlowAnalysis, isCallFlowNodeInPatch, isCallFlowActive, openCallFlowPanel, callFlowInstall,
     editSuggestionsEnabled, handleAddSuggestionsForFile, handleAddEditorCommentForFile,
-    handleCodeNavRequest, codeNav.result, codeNav.isLoading, codeNav.activeSymbol,
+    handleCodeNavRequest, codeNav.target, codeNav.select, codeNav.result, codeNav.isLoading, codeNav.activeSymbol,
     tokenHoverEnabled, handleTokenHoverEnter, tokenHover.onTokenHoverLeave,
   ]);
 

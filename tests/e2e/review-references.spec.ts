@@ -398,3 +398,62 @@ test('line jumps recover interrupted rendering and yield to manual scrolling', a
     await expect(line).not.toBeInViewport();
   } finally { await session.close(); }
 });
+
+
+test('reference history restores nested lookups and preserves a manually resized dock', async ({ page }) => {
+  const session = await review(page);
+  try {
+    await openReferences(page);
+    const side = page.locator('[data-reference-file]');
+    const group = page.locator('.dv-groupview').filter({ has: side });
+    const before = (await group.boundingBox())!;
+    await page.mouse.move(before.x - 2, before.y + before.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(before.x + 180, before.y + before.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await group.boundingBox())!.width).toBeLessThan(before.width - 100);
+    const resized = (await group.boundingBox())!.width;
+    await choose(page, otherReference);
+    await side.locator('[data-additions] [data-line="2"] [data-char]').filter({ hasText: /^next$/ }).click({ modifiers: ['ControlOrMeta'] });
+    await expect(page.locator('.dv-tab').filter({ hasText: 'References: next' })).toBeVisible();
+    await expect(page.getByLabel('Symbol locations').getByRole('heading', { name: 'Definitions', exact: true })).toBeVisible();
+    // Meta and Control, including the shifted '_' emitted by Mac keyboards.
+    const jump = async (forward = false, meta = false) => {
+      const handled = await page.evaluate(({ forward, meta }) => !window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: forward ? '_' : '-', code: 'Minus', metaKey: meta, ctrlKey: !meta,
+        shiftKey: forward, bubbles: true, cancelable: true,
+      })), { forward, meta });
+      expect(handled).toBe(true);
+    };
+    await jump(false, true);
+    await expect(page.locator('.dv-tab').filter({ hasText: 'References: widget' })).toBeVisible();
+    await expect(side).toHaveAttribute('data-reference-file', 'b-other.ts');
+    await page.keyboard.press('Control+-');
+    await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
+    await page.keyboard.press('Control+Shift+-');
+    await expect(side).toHaveAttribute('data-reference-file', 'b-other.ts');
+    await jump(true, true);
+    await expect(page.locator('.dv-tab').filter({ hasText: 'References: next' })).toBeVisible();
+    await jump();
+    await choose(page, ':63 export const distant = widget(4);');
+    await jump(true); // A new link discards the old forward branch, without browser zoom.
+    await expect(side).toHaveAttribute('data-reference-file', 'c-distant.ts');
+    await expect(side.locator('[data-additions] [data-line="63"]')).toBeInViewport();
+    await page.locator('.dv-tab').filter({ hasText: 'All files' }).click();
+    await openReferences(page);
+    await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
+    await expect.poll(async () => Math.abs((await group.boundingBox())!.width - resized)).toBeLessThan(3);
+    await selectLine(page, side, 2, 'unified');
+    await page.getByPlaceholder('Leave feedback...').fill('preserve navigation draft');
+    await page.getByPlaceholder('Leave feedback...').dispatchEvent('keydown', { key: '-', code: 'Minus', metaKey: true });
+    await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
+    await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('preserve navigation draft');
+    await page.keyboard.press('Escape');
+    await jump();
+    await expect(side).toHaveAttribute('data-reference-file', 'a-main.ts');
+    await jump(true);
+    await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
+    await selectLine(page, side, 2, 'unified');
+    await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('preserve navigation draft');
+  } finally { await session.close(); }
+});

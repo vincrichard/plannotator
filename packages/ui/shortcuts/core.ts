@@ -61,6 +61,7 @@ const NAMED_TOKENS = new Set([
   // Punctuation keys used as shortcut targets. Add new ones as needed; we
   // whitelist explicitly so typos like `Cmd` instead of `Mod` keep failing
   // validation.
+  '-',
   '.',
   '/',
   '[',
@@ -354,6 +355,9 @@ export function getShortcutDigit(event: ShortcutKeyEvent): number | null {
 function matchesKeyToken(event: ShortcutKeyEvent, token: string): boolean {
   const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
   const shortcutDigit = getShortcutDigit(event);
+
+  // Shift+Minus produces '_' on common keyboards.
+  if (token === '-') return event.key === '-' || (event.shiftKey && event.key === '_');
 
   if (token === 'Space') {
     return event.key === ' ' || event.key === 'Spacebar' || event.code === 'Space';

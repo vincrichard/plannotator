@@ -73,6 +73,22 @@ export const reviewEditorShortcuts = defineShortcutScope({
       preventDefault: true,
       displayOrder: 5,
     },
+    referenceBack: {
+      description: 'Previous reference location',
+      bindings: ['Mod+-'],
+      section: 'Layout',
+      hint: 'While References is open, outside text fields and dialogs.',
+      preventDefault: true,
+      displayOrder: 6,
+    },
+    referenceForward: {
+      description: 'Next reference location',
+      bindings: ['Mod+Shift+-'],
+      section: 'Layout',
+      hint: 'Return forward after a backward reference jump.',
+      preventDefault: true,
+      displayOrder: 7,
+    },
     toggleFileTree: {
       description: 'Toggle file tree',
       bindings: ['Mod+B'],

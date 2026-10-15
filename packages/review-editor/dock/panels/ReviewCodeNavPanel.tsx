@@ -6,6 +6,7 @@ import { ReviewFileDiff } from './ReviewDiffPanel';
 import { referenceLineInSnapshot } from '../../utils/referencePreview';
 import { readPatchLines } from '../../utils/codeAnnotationAnchor';
 import type { SelectedLineRange } from '@plannotator/ui/types';
+import type { ReferenceTarget } from '../../hooks/useCodeNav';
 import type { CodeNavLocation } from '@plannotator/shared/code-nav';
 
 function basename(filePath: string): string {
@@ -34,14 +35,6 @@ function groupByFile(locations: CodeNavLocation[]): FileGroup[] {
     filePath,
     locations,
   }));
-}
-
-interface ReferenceTarget {
-  filePath: string;
-  line: number;
-  side: 'old' | 'new';
-  /** Absent for sidebar jumps, whose coordinates already belong to the review. */
-  snippet?: string;
 }
 
 const CodePreview: React.FC<{ target: ReferenceTarget; isActive: boolean }> = ({ target, isActive }) => {
@@ -167,19 +160,19 @@ export const ReviewCodeNavPanel: React.FC<IDockviewPanelProps> = (props) => {
 
   const definitions = useMemo(() => groupByFile(codeNavResult?.definitions ?? []), [codeNavResult]);
   const references = useMemo(() => groupByFile(codeNavResult?.references ?? []), [codeNavResult]);
-  const [selectedLocation, setSelectedLocation] = useState<ReferenceTarget | null>(null);
+  const selectedLocation = state.codeNavTarget;
+  const setSelectedLocation = state.onSelectCodeNavTarget;
 
   useEffect(() => {
-    const first = codeNavResult?.definitions[0] ?? codeNavResult?.references[0];
-    setSelectedLocation(first ? { ...first, side: 'new' } : null);
-  }, [codeNavResult]);
+    props.api.setTitle(codeNavActiveSymbol ? `References: ${codeNavActiveSymbol}` : 'References');
+  }, [codeNavActiveSymbol, props.api]);
 
   const requestedAnnotation = state.allAnnotations.find(annotation => annotation.id === props.params?.annotationId);
   useEffect(() => {
     if (requestedAnnotation) {
       setSelectedLocation({ filePath: requestedAnnotation.filePath, line: Math.max(1, requestedAnnotation.lineStart), side: requestedAnnotation.side });
     }
-  }, [requestedAnnotation, state.scrollTargetAnnotation]);
+  }, [requestedAnnotation, state.scrollTargetAnnotation, setSelectedLocation]);
 
   useEffect(() => {
     props.api.updateParameters({ filePath: selectedLocation?.filePath });
@@ -188,7 +181,7 @@ export const ReviewCodeNavPanel: React.FC<IDockviewPanelProps> = (props) => {
   const handleSelect = useCallback((loc: CodeNavLocation) => {
     props.api.updateParameters({ annotationId: undefined });
     setSelectedLocation({ ...loc, side: 'new' });
-  }, [props.api]);
+  }, [props.api, setSelectedLocation]);
 
   return (
     <div

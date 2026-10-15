@@ -19,6 +19,15 @@ import {
 } from './shortcuts';
 
 describe('shortcuts', () => {
+  it('distinguishes minus navigation from shifted underscore and ordinary typing', () => {
+    const event = { key: '-', code: 'Minus', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false };
+    expect(matchesShortcutBinding(event, 'Mod+-')).toBe(true);
+    expect(matchesShortcutBinding(event, 'Mod+Shift+-')).toBe(false);
+    expect(matchesShortcutBinding({ ...event, key: '_', shiftKey: true }, 'Mod+Shift+-')).toBe(true);
+    expect(matchesShortcutBinding({ ...event, key: '_', shiftKey: true }, 'Mod+-')).toBe(false);
+    expect(matchesShortcutBinding({ ...event, metaKey: false }, 'Mod+-')).toBe(false);
+  });
+
   it('formats bindings for docs and keycaps', () => {
     expect(formatShortcutBindingText('Mod+Enter')).toBe('Cmd/Ctrl+Enter');
     expect(formatShortcutBindingText('Alt hold')).toBe('Hold Alt');
