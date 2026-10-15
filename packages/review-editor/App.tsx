@@ -149,6 +149,7 @@ import { useReviewProgress } from './hooks/useReviewProgress';
 import { resolveDiffSwitchUnviews } from './utils/autoViewed';
 import { needsAutoViewedNotice, markAutoViewedNoticeSeen, turnOffAutoViewed, toggleAutoViewed } from './utils/autoViewedNotice';
 import { usePRSession, type PRSessionUpdate } from './hooks/usePRSession';
+import type { FileAnnotationSelection } from './dock/ReviewStateContext';
 import { useAnnotationFactory } from './hooks/useAnnotationFactory';
 import { DEMO_DIFF } from './demoData';
 import { exportReviewFeedback, buildProseFeedback, commitShaFromMode } from './utils/exportFeedback';
@@ -1378,6 +1379,7 @@ const ReviewApp: React.FC = () => {
     if (!dockApi) return;
     const existing = dockApi.getPanel(REVIEW_CODE_NAV_PANEL_ID);
     if (existing) {
+      existing.api.updateParameters({ annotationId: undefined });
       existing.api.setTitle(`References: ${request.symbol}`);
       existing.api.setActive();
     } else {
@@ -1396,7 +1398,7 @@ const ReviewApp: React.FC = () => {
         // room from the diff being read, and the references list is a narrow
         // column that reads naturally at the right edge.
         position: { direction: 'right', referencePanel: refPanel },
-        initialWidth: 420,
+        initialWidth: 520,
       });
     }
   }, [closeTokenHover, codeNav.resolve, dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive, gitContext, agentCwd]);
@@ -1466,13 +1468,14 @@ const ReviewApp: React.FC = () => {
   // File-aware Ask AI: the all-files surface resolves the owning file itself
   // (its toolbar selection lives in a file the single-file panel may never
   // have focused), so it must NOT go through activeFileIndex.
-  const handleAskAIForFile = useCallback((filePath: string, question: string) => {
-    if (!pendingSelection) return;
-    const file = files.find(f => f.path === filePath);
+  const handleAskAIForFile = useCallback((filePath: string, question: string, selection?: FileAnnotationSelection) => {
+    const range = selection?.range ?? pendingSelection;
+    if (!range) return;
+    const file = selection?.file ?? files.find(f => f.path === filePath);
     if (!file) return;
-    const lineStart = Math.min(pendingSelection.start, pendingSelection.end);
-    const lineEnd = Math.max(pendingSelection.start, pendingSelection.end);
-    const side = pendingSelection.side === 'additions' ? 'new' : 'old';
+    const lineStart = Math.min(range.start, range.end);
+    const lineEnd = Math.max(range.start, range.end);
+    const side = range.side === 'additions' ? 'new' : 'old';
     const selectedCode = extractLinesFromPatch(file.patch, lineStart, lineEnd, side);
 
     askAI({
@@ -2460,11 +2463,13 @@ const ReviewApp: React.FC = () => {
     originalCode?: string,
     conventionalLabel?: ConventionalLabel,
     decorations?: ConventionalDecoration[],
-    tokenMeta?: TokenAnnotationMeta
+    tokenMeta?: TokenAnnotationMeta,
+    selection?: FileAnnotationSelection
   ) => {
-    if (!pendingSelection) return;
-    const lineStart = Math.min(pendingSelection.start, pendingSelection.end);
-    const lineEnd = Math.max(pendingSelection.start, pendingSelection.end);
+    const range = selection?.range ?? pendingSelection;
+    if (!range) return;
+    const lineStart = Math.min(range.start, range.end);
+    const lineEnd = Math.max(range.start, range.end);
     const newAnnotation: CodeAnnotation = {
       id: generateId(),
       type,
@@ -2472,7 +2477,7 @@ const ReviewApp: React.FC = () => {
       filePath,
       lineStart,
       lineEnd,
-      side: pendingSelection.side === 'additions' ? 'new' : 'old',
+      side: range.side === 'additions' ? 'new' : 'old',
       text,
       suggestedCode,
       originalCode,
@@ -2486,8 +2491,8 @@ const ReviewApp: React.FC = () => {
       conventionalLabel,
       decorations,
     };
-    addCodeAnnotationsWithHistory([withPRContext(newAnnotation)]);
-    clearPendingSelection();
+    addCodeAnnotationsWithHistory([withPRContext(newAnnotation, selection?.file)]);
+    if (!selection) clearPendingSelection();
   }, [pendingSelection, identity, withPRContext, clearPendingSelection, addCodeAnnotationsWithHistory]);
 
   const handleAddCallFlowAnnotation = useCallback((
@@ -3844,6 +3849,26 @@ const ReviewApp: React.FC = () => {
       setSelectedAnnotationId(id);
       return;
     }
+    const referencePanel = dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
+    if (dockApi && annotation.filePath && (!files.some(file => file.path === annotation.filePath) ||
+      referencePanel?.api.getParameters().filePath === annotation.filePath)) {
+      if (referencePanel) {
+        referencePanel.api.updateParameters({ annotationId: id });
+        referencePanel.api.setActive();
+      } else {
+        dockApi.addPanel({
+          id: REVIEW_CODE_NAV_PANEL_ID,
+          component: REVIEW_PANEL_TYPES.CODE_NAV,
+          title: 'References',
+          params: { annotationId: id },
+          position: { direction: 'right' },
+          initialWidth: 520,
+        });
+      }
+      setSelectedAnnotationId(id);
+      setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
+      return;
+    }
     // While the guide takeover is open, the dock's active file is meaningless
     // (guide renders its own per-section diffs) — skip the dock file-switch
     // mutation so leaving the guide doesn't land on an unexpected file, and
@@ -3860,7 +3885,7 @@ const ReviewApp: React.FC = () => {
     }
     setSelectedAnnotationId(id);
     setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
-  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel]);
+  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel, dockApi]);
 
   // Diff context bundled into local-mode feedback headers so the receiving
   // agent knows which diff the annotations are anchored to. Uses committedBase

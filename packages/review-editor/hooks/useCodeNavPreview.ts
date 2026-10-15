@@ -1,82 +1,35 @@
-import { useState, useCallback, useRef } from 'react';
+import { useMemo, useState } from 'react';
+import type { DiffFile } from '../types';
+import { useFileContents } from './useFileContents';
+import { unchangedReferenceFile } from '../utils/referencePreview';
 
-const MAX_CACHE_ENTRIES = 10;
+/** Mounted per path/snapshot by the References panel; never caches working-tree bytes. */
+export function useCodeNavPreview(filePath: string, changedFile: DiffFile | undefined, reviewBase?: string, snapshotId?: string) {
+  const [reloadToken, setReloadToken] = useState(0);
+  const { fileContents, loading, stale } = useFileContents({
+    filePath,
+    oldPath: changedFile?.oldPath,
+    reviewBase,
+    reviewSnapshotId: snapshotId,
+    enabled: true,
+    reloadToken,
+  });
+  const file = useMemo(() => {
+    if (changedFile) return changedFile;
+    if (!fileContents || fileContents.new == null || fileContents.old !== fileContents.new) return null;
+    if (fileContents.new.includes('\0')) return null;
+    return unchangedReferenceFile(filePath, fileContents.new);
+  }, [filePath, changedFile, fileContents]);
 
-export interface PreviewData {
-  lines: string[];
-  startLine: number;
-  targetLine: number;
-  filePath: string;
-}
-
-export function useCodeNavPreview() {
-  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const cacheRef = useRef(new Map<string, string>());
-  const abortRef = useRef<AbortController | null>(null);
-
-  const selectLocation = useCallback(
-    async (filePath: string, line: number) => {
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      const cache = cacheRef.current;
-      const cached = cache.get(filePath);
-
-      if (cached) {
-        setIsLoading(false);
-        const allLines = cached.split('\n');
-        setPreviewData({
-          lines: allLines,
-          startLine: 1,
-          targetLine: line,
-          filePath,
-        });
-        return;
-      }
-
-      setIsLoading(true);
-      try {
-        const res = await fetch(
-          `/api/code-nav/file?path=${encodeURIComponent(filePath)}`,
-          { signal: controller.signal },
-        );
-        if (!res.ok) throw new Error('Failed');
-        const data: { content: string } = await res.json();
-
-        if (cache.size >= MAX_CACHE_ENTRIES) {
-          const firstKey = cache.keys().next().value;
-          if (firstKey) cache.delete(firstKey);
-        }
-        cache.set(filePath, data.content);
-
-        if (controller.signal.aborted) return;
-
-        const allLines = data.content.split('\n');
-        setPreviewData({
-          lines: allLines,
-          startLine: 1,
-          targetLine: line,
-          filePath,
-        });
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setPreviewData(null);
-      } finally {
-        if (abortRef.current === controller) {
-          setIsLoading(false);
-        }
-      }
-    },
-    [],
-  );
-
-  const clear = useCallback(() => {
-    abortRef.current?.abort();
-    setPreviewData(null);
-    setIsLoading(false);
-  }, []);
-
-  return { previewData, isLoading, selectLocation, clear };
+  return {
+    file,
+    retry: () => setReloadToken(token => token + 1),
+    fileContents,
+    loading,
+    error: stale
+      ? 'The review snapshot is stale. Refresh the review to load this file.'
+      : !loading && !file
+        ? 'This file is unavailable or differs from the selected review. Refresh or choose another diff.'
+        : null,
+  };
 }

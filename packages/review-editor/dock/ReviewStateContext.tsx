@@ -23,6 +23,12 @@ export interface LineAnnotationComposeRequest {
   readonly range: SelectedLineRange;
 }
 
+/** A selection owned by a secondary viewer, independent of the main diff's focus. */
+export interface FileAnnotationSelection {
+  file: DiffFile;
+  range: SelectedLineRange;
+}
+
 /**
  * Shared review state consumed by dockview panel wrappers.
  *
@@ -108,7 +114,7 @@ export interface ReviewState {
     text: string,
   ) => boolean;
   onAddAnnotation: (type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
-  onAddAnnotationForFile: (filePath: string, type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
+  onAddAnnotationForFile: (filePath: string, type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta, selection?: FileAnnotationSelection) => void;
   /** EXPERIMENTAL edit-to-suggestion flag (cookie setting, default OFF). Only
    * the plain all-files panel consumes it — Guided Review surfaces stay off. */
   editSuggestionsEnabled: boolean;
@@ -217,7 +223,7 @@ export interface ReviewState {
   /** File-aware Ask AI for the all-files surface. onAskAI above resolves the
    *  file from the single-file panel's focus index, which is wrong when the
    *  selection lives in the all-files CodeView. */
-  onAskAIForFile: (filePath: string, question: string) => void;
+  onAskAIForFile: (filePath: string, question: string, selection?: FileAnnotationSelection) => void;
   isAILoading: boolean;
   onViewAIResponse: (questionId?: string) => void;
   onClickAIMarker: (questionId: string) => void;

@@ -18,6 +18,8 @@ export interface UseFileContentsOptions {
   /** False when there is no source behind the diff (static patch review):
    *  nothing is fetched and `loading` is false. */
   enabled: boolean;
+  /** Explicit retry after a failed or stale lookup. */
+  reloadToken?: number;
 }
 
 export interface UseFileContentsResult {
@@ -41,6 +43,7 @@ export function useFileContents({
   reviewBase,
   reviewSnapshotId,
   enabled,
+  reloadToken,
 }: UseFileContentsOptions): UseFileContentsResult {
   const [fileContents, setFileContents] = useState<ReviewFileContents | null>(null);
   const [loading, setLoading] = useState(enabled);
@@ -63,7 +66,7 @@ export function useFileContents({
         return res.ok ? res.json() : null;
       })
       .then((data: { oldContent: string | null; newContent: string | null } | null) => {
-        if (data && (data.oldContent != null || data.newContent != null)) {
+        if (!controller.signal.aborted && data && (data.oldContent != null || data.newContent != null)) {
           setFileContents({ forPath: filePath, old: data.oldContent, new: data.newContent });
         }
       })
@@ -72,7 +75,7 @@ export function useFileContents({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [filePath, oldPath, reviewBase, reviewSnapshotId, enabled]);
+  }, [filePath, oldPath, reviewBase, reviewSnapshotId, enabled, reloadToken]);
 
   return { fileContents, loading, stale };
 }

@@ -57,12 +57,12 @@ export function useAnnotationFactory(
   }), [prMetadata, diffScope, commitContext, gitButlerContext]);
 
   const withPRContext = useCallback(
-    (annotation: CodeAnnotation): CodeAnnotation => {
+    (annotation: CodeAnnotation, file?: DiffFile): CodeAnnotation => {
       const stamped = { ...annotation, ...prContext };
       if (!prMetadata || !files || (stamped.scope ?? 'line') !== 'line') return stamped;
       return {
         ...stamped,
-        ...captureAnchor(stamped, files),
+        ...captureAnchor(stamped, file ? [file] : files),
         ...(snapshotId ? { anchorSnapshot: snapshotId } : {}),
       };
     },

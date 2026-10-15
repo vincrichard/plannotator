@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { useReviewState } from '../ReviewStateContext';
-import { useCodeNavPreview, type PreviewData } from '../../hooks/useCodeNavPreview';
-import { HighlightedCode } from '../../components/HighlightedCode';
-import { detectLanguage } from '../../utils/detectLanguage';
+import { useCodeNavPreview } from '../../hooks/useCodeNavPreview';
+import { ReviewFileDiff } from './ReviewDiffPanel';
+import { referenceLineInSnapshot } from '../../utils/referencePreview';
+import { readPatchLines } from '../../utils/codeAnnotationAnchor';
+import type { SelectedLineRange } from '@plannotator/ui/types';
 import type { CodeNavLocation } from '@plannotator/shared/code-nav';
 
 function basename(filePath: string): string {
@@ -34,69 +36,51 @@ function groupByFile(locations: CodeNavLocation[]): FileGroup[] {
   }));
 }
 
-const CodePreview: React.FC<{
-  preview: PreviewData | null;
-  isLoading: boolean;
-}> = ({ preview, isLoading }) => {
-  const targetRef = useRef<HTMLTableRowElement>(null);
+interface ReferenceTarget {
+  filePath: string;
+  line: number;
+  side: 'old' | 'new';
+  /** Absent for sidebar jumps, whose coordinates already belong to the review. */
+  snippet?: string;
+}
 
-  useEffect(() => {
-    if (targetRef.current) {
-      targetRef.current.scrollIntoView({ block: 'center' });
+const CodePreview: React.FC<{ target: ReferenceTarget; isActive: boolean }> = ({ target, isActive }) => {
+  const state = useReviewState();
+  const changedFile = state.files.find(file => file.path === target.filePath || file.oldPath === target.filePath);
+  const preview = useCodeNavPreview(changedFile?.path ?? target.filePath, changedFile, state.reviewBase, state.snapshotId);
+  const range = useMemo<SelectedLineRange | null>(() => {
+    let line: number | null = target.line;
+    if (target.snippet !== undefined) {
+      const content = preview.fileContents?.new;
+      line = content != null
+        ? referenceLineInSnapshot(content, target.line, target.snippet)
+        : changedFile && readPatchLines(changedFile.patch, 'new', target.line, target.line)?.trimEnd() === target.snippet.trimEnd()
+          ? target.line : null;
     }
-  }, [preview?.targetLine, preview?.filePath]);
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-xs">
-        <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  if (!preview) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-xs">
-        Select a reference to preview
-      </div>
-    );
-  }
-
-  const language = detectLanguage(preview.filePath);
+    return line == null ? null : { start: line, end: line, side: target.side === 'old' ? 'deletions' : 'additions' };
+  }, [target, preview.fileContents, changedFile]);
 
   return (
-    <div className="code-nav-peek font-mono text-[12px] leading-[20px]">
-      <table className="w-full border-collapse">
-        <tbody>
-          {preview.lines.map((line, i) => {
-            const lineNum = preview.startLine + i;
-            const isTarget = lineNum === preview.targetLine;
-            const targetStyle = isTarget ? { backgroundColor: 'var(--muted)' } : undefined;
-            return (
-              <tr key={lineNum} ref={isTarget ? targetRef : undefined}>
-                <td
-                  className="text-right pr-3 pl-2 select-none text-muted-foreground/50 w-[1%] whitespace-nowrap align-top"
-                  style={targetStyle}
-                >
-                  {lineNum}
-                </td>
-                <td
-                  className="pr-4 whitespace-pre"
-                  style={targetStyle}
-                >
-                  <HighlightedCode code={line || ' '} language={language} />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="h-full min-h-0 flex flex-col" data-reference-file={preview.file?.path ?? target.filePath}>
+      {preview.error && <div role="status" className="p-3 text-xs text-muted-foreground">{preview.error} <button className="text-primary underline" onClick={preview.retry}>Retry file</button></div>}
+      {!preview.error && !preview.loading && target.snippet !== undefined && !range && (
+        <div role="status" className="px-3 py-2 text-xs text-muted-foreground">
+          This working-tree reference could not be located unambiguously in the review snapshot. Select a line in the reviewed code to comment.
+        </div>
+      )}
+      {!changedFile && preview.file && <div className="px-3 py-1 text-xs text-muted-foreground">Unchanged file · review snapshot</div>}
+      {preview.file ? (
+        <div className="flex-1 min-h-0">
+          <ReviewFileDiff file={preview.file} reference={{ target: range, isActive, unchanged: !changedFile }} />
+        </div>
+      ) : preview.loading && <div role="status" className="p-3 text-xs text-muted-foreground">Loading reviewed file…</div>}
     </div>
   );
 };
 
 const ReferenceList: React.FC<{
   groups: FileGroup[];
-  selectedLocation: CodeNavLocation | null;
+  selectedLocation: ReferenceTarget | null;
   onSelect: (loc: CodeNavLocation) => void;
 }> = ({ groups, selectedLocation, onSelect }) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -173,93 +157,81 @@ const ReferenceList: React.FC<{
 
 export const ReviewCodeNavPanel: React.FC<IDockviewPanelProps> = (props) => {
   const state = useReviewState();
-  const preview = useCodeNavPreview();
   const containerRef = useRef<HTMLDivElement>(null);
   const { codeNavResult, codeNavIsLoading, codeNavActiveSymbol } = state;
-
-  const allLocations = useMemo(() => {
-    if (!codeNavResult) return [];
-    return [...codeNavResult.definitions, ...codeNavResult.references];
-  }, [codeNavResult]);
-
-  const groups = useMemo(() => groupByFile(allLocations), [allLocations]);
-
-  const [selectedLocation, setSelectedLocation] = useState<CodeNavLocation | null>(null);
-
+  const [isActive, setIsActive] = useState(props.api.isActive);
   useEffect(() => {
-    if (allLocations.length > 0) {
-      const first = allLocations[0];
-      setSelectedLocation(first);
-      preview.selectLocation(first.filePath, first.line);
-    } else {
-      setSelectedLocation(null);
-      preview.clear();
-    }
-  }, [allLocations]);
-
-  const handleSelect = useCallback(
-    (loc: CodeNavLocation) => {
-      setSelectedLocation(loc);
-      preview.selectLocation(loc.filePath, loc.line);
-    },
-    [preview.selectLocation],
-  );
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        props.api.close();
-      }
-    };
-    el.addEventListener('keydown', handler);
-    return () => el.removeEventListener('keydown', handler);
+    const listener = props.api.onDidActiveChange(event => setIsActive(event.isActive));
+    return () => listener.dispose();
   }, [props.api]);
 
-  if (codeNavIsLoading) {
-    return (
-      <div className="h-full flex items-center justify-center text-muted-foreground text-xs gap-2">
-        <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
-        Searching for <code className="bg-muted px-1 py-0.5 rounded">{codeNavActiveSymbol}</code>
-      </div>
-    );
-  }
+  const definitions = useMemo(() => groupByFile(codeNavResult?.definitions ?? []), [codeNavResult]);
+  const references = useMemo(() => groupByFile(codeNavResult?.references ?? []), [codeNavResult]);
+  const [selectedLocation, setSelectedLocation] = useState<ReferenceTarget | null>(null);
 
-  if (codeNavResult?.backend === 'unavailable') {
-    return (
-      <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
-        Install <a href="https://github.com/BurntSushi/ripgrep" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline mx-1">ripgrep</a> for code navigation
-      </div>
-    );
-  }
+  useEffect(() => {
+    const first = codeNavResult?.definitions[0] ?? codeNavResult?.references[0];
+    setSelectedLocation(first ? { ...first, side: 'new' } : null);
+  }, [codeNavResult]);
 
-  if (!codeNavResult || allLocations.length === 0) {
-    return (
-      <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
-        No results for <code className="bg-muted px-1 py-0.5 rounded ml-1">{codeNavActiveSymbol}</code>
-      </div>
-    );
-  }
+  const requestedAnnotation = state.allAnnotations.find(annotation => annotation.id === props.params?.annotationId);
+  useEffect(() => {
+    if (requestedAnnotation) {
+      setSelectedLocation({ filePath: requestedAnnotation.filePath, line: Math.max(1, requestedAnnotation.lineStart), side: requestedAnnotation.side });
+    }
+  }, [requestedAnnotation, state.scrollTargetAnnotation]);
+
+  useEffect(() => {
+    props.api.updateParameters({ filePath: selectedLocation?.filePath });
+  }, [selectedLocation?.filePath, props.api]);
+
+  const handleSelect = useCallback((loc: CodeNavLocation) => {
+    props.api.updateParameters({ annotationId: undefined });
+    setSelectedLocation({ ...loc, side: 'new' });
+  }, [props.api]);
 
   return (
     <div
       ref={containerRef}
       tabIndex={-1}
-      className="h-full flex flex-col border-t border-border/50"
+      aria-label="References"
+      className="h-full min-h-0 flex flex-col border-t border-border/50"
+      onKeyDown={event => {
+        // Escape in a comment composer belongs to the composer, not the panel.
+        if (event.key === 'Escape' && event.target === containerRef.current) props.api.close();
+      }}
     >
-      <div className="flex-1 min-h-0 flex">
-        <div className="flex-1 min-w-0 overflow-auto border-r border-border/30">
-          <CodePreview preview={preview.previewData} isLoading={preview.isLoading} />
-        </div>
-        <div className="w-[260px] flex-shrink-0 overflow-auto">
-          <ReferenceList
-            groups={groups}
-            selectedLocation={selectedLocation}
-            onSelect={handleSelect}
+      <div className="max-h-[35%] shrink-0 overflow-auto border-b border-border/30" aria-label="Symbol locations">
+        {codeNavIsLoading ? (
+          <div role="status" className="p-3 text-xs text-muted-foreground">Searching for {codeNavActiveSymbol}…</div>
+        ) : codeNavResult?.backend === 'unavailable' ? (
+          <div className="p-3 text-xs text-muted-foreground">
+            Install <a href="https://github.com/BurntSushi/ripgrep" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">ripgrep</a> for code navigation
+          </div>
+        ) : (
+          <>
+            {definitions.length > 0 && <>
+              <h3 className="px-2 py-1 text-xs font-medium">Definitions</h3>
+              <ReferenceList groups={definitions} selectedLocation={selectedLocation} onSelect={handleSelect} />
+            </>}
+            {references.length > 0 && <>
+              <h3 className="px-2 py-1 text-xs font-medium">References</h3>
+              <ReferenceList groups={references} selectedLocation={selectedLocation} onSelect={handleSelect} />
+            </>}
+            {codeNavResult && !definitions.length && !references.length && (
+              <div className="p-3 text-xs text-muted-foreground">No results for {codeNavActiveSymbol}</div>
+            )}
+          </>
+        )}
+      </div>
+      <div className="flex-1 min-h-0">
+        {selectedLocation ? (
+          <CodePreview
+            key={`${selectedLocation.filePath}:${state.snapshotId ?? ''}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}`}
+            target={selectedLocation}
+            isActive={isActive}
           />
-        </div>
+        ) : <div className="p-3 text-xs text-muted-foreground">Select a reference to review</div>}
       </div>
     </div>
   );

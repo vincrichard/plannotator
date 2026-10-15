@@ -1,4 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { SelectedLineRange } from '@plannotator/ui/types';
+import type { DiffFile } from '../../types';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { DiffViewer } from '../../components/DiffViewer';
 import { useReviewState } from '../ReviewStateContext';
@@ -19,7 +21,23 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
   const file = filePath
     ? state.files.find(candidate => candidate.path === filePath)
     : undefined;
-  const isFocusedFile = !!file && state.focusedFilePath === file.path;
+  return file ? <ReviewFileDiff file={file} /> : (
+    <div className="h-full flex items-center justify-center text-muted-foreground text-sm">File not found</div>
+  );
+};
+
+/** The normal review viewer, also used for targets opened in References. */
+export const ReviewFileDiff: React.FC<{
+  file: DiffFile;
+  reference?: { target: SelectedLineRange | null; isActive: boolean; unchanged: boolean };
+}> = ({ file, reference }) => {
+  const state = useReviewState();
+  const [referenceSelection, setReferenceSelection] = useState<SelectedLineRange | null>(null);
+  useEffect(() => {
+    setReferenceSelection(reference?.target ?? null);
+  }, [reference?.target]);
+  const selection = reference ? referenceSelection : state.pendingSelection;
+  const isFocusedFile = reference ? reference.isActive : state.focusedFilePath === file.path;
 
   const fileAnnotations = useMemo(
     () => {
@@ -51,63 +69,60 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
 
   const searchMatchesForFile = useMemo(
     () =>
-      file && isFocusedFile
+      file && isFocusedFile && !reference
         ? state.activeFileSearchMatches
         : [],
-    [state.activeFileSearchMatches, isFocusedFile, file]
+    [state.activeFileSearchMatches, isFocusedFile, file, reference]
   );
-
-  if (!file) {
-    return (
-      <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
-        File not found
-      </div>
-    );
-  }
 
   // Keying on reviewBase forces a remount when the user picks a new base.
   // Otherwise the file-content fetch for the new base can land before the new
   // patch, and Pierre briefly reconciles old-patch + new-content → "trailing
   // context mismatch" warnings in the console.
   return (
-    <div key={`${file.path}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}:${state.feedbackDiffContext?.snapshotId ?? ''}`} className="h-full relative">
+    <div key={`${file.path}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}:${state.snapshotId ?? ''}`} className="h-full relative">
       <DiffViewer
         patch={file.patch}
         filePath={file.path}
         oldPath={file.oldPath}
         status={file.status}
         reviewBase={state.reviewBase}
-        reviewSnapshotId={state.feedbackDiffContext?.snapshotId}
+        reviewSnapshotId={state.snapshotId}
         imagePreviewAvailable={state.imagePreviewAvailable}
         imageSnapshotId={state.snapshotId}
-        contextExpansionAvailable={state.contextExpansionAvailable}
+        contextExpansionAvailable={reference?.unchanged ? false : state.contextExpansionAvailable}
         prUrl={state.prMetadata?.url}
         prDiffScope={state.prDiffScope}
         isFocused={isFocusedFile}
-        diffStyle={state.diffStyle}
+        diffStyle={reference?.unchanged ? 'unified' : state.diffStyle}
         diffOverflow={state.diffOverflow}
         diffIndicators={state.diffIndicators}
         lineDiffType={state.lineDiffType}
         disableLineNumbers={state.disableLineNumbers}
         disableBackground={state.disableBackground}
-        expandUnchanged={state.expandUnchanged}
+        expandUnchanged={reference ? true : state.expandUnchanged}
         fontFamily={state.fontFamily}
         fontSize={state.fontSize}
         annotations={fileAnnotations}
         selectedAnnotationId={state.selectedAnnotationId}
         scrollTargetAnnotation={state.scrollTargetAnnotation}
-        pendingSelection={state.pendingSelection}
+        pendingSelection={selection}
         compactTouchLayout={state.isCompactTouchLayout}
-        onLineSelection={state.onLineSelection}
-        onAddAnnotation={state.onAddAnnotation}
-        onAddFileComment={state.onAddFileComment}
+        onLineSelection={reference ? setReferenceSelection : state.onLineSelection}
+        onAddAnnotation={(type, text, suggestedCode, originalCode, label, decorations, tokenMeta) => {
+          if (!selection) return;
+          state.onAddAnnotationForFile(file.path, type, text, suggestedCode, originalCode, label, decorations, tokenMeta,
+            reference ? { file, range: selection } : undefined);
+          if (reference) setReferenceSelection(null);
+        }}
+        onAddFileComment={(text) => state.onAddFileCommentForFile(file.path, text)}
         onEditAnnotation={state.onEditAnnotation}
         onSelectAnnotation={state.onSelectAnnotation}
         onDeleteAnnotation={state.onDeleteAnnotation}
         isViewed={state.viewedFiles.has(file.path)}
         isGenerated={state.generatedFiles.has(file.path)}
         onToggleViewed={() => state.onToggleViewed(file.path)}
-        showViewedControls={state.showViewedControls}
+        showViewedControls={!reference?.unchanged && state.showViewedControls}
         isStaged={state.stagedFiles.has(file.path)}
         isStaging={state.stagingFile === file.path}
         onStage={() => state.onStage(file.path)}
@@ -116,29 +131,30 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         // alone would offer a no-op Git Add on them that flips local state.
         // Mirrors the `a` shortcut and the all-files header.
         canStage={state.canStagePath ? state.canStagePath(file.path) : state.canStageFiles}
-        showStageControls={state.showStageControls}
+        showStageControls={!reference?.unchanged && state.showStageControls}
         stageError={state.stageError}
-        searchQuery={state.isSearchPending ? '' : state.debouncedSearchQuery}
+        searchQuery={reference || state.isSearchPending ? '' : state.debouncedSearchQuery}
         searchMatches={searchMatchesForFile}
-        activeSearchMatchId={isFocusedFile ? state.activeSearchMatchId : null}
+        activeSearchMatchId={!reference && isFocusedFile ? state.activeSearchMatchId : null}
         activeSearchMatch={
-          isFocusedFile && state.activeSearchMatch?.filePath === file.path
+          !reference && isFocusedFile && state.activeSearchMatch?.filePath === file.path
             ? state.activeSearchMatch
             : null
         }
         aiAvailable={state.aiAvailable}
-        onAskAI={state.onAskAI}
+        onAskAI={(question) => state.onAskAIForFile(file.path, question,
+          reference && selection ? { file, range: selection } : undefined)}
         isAILoading={state.isAILoading}
         onViewAIResponse={state.onViewAIResponse}
         aiMessages={aiMessagesForFile}
         onClickAIMarker={state.onClickAIMarker}
-        aiHistoryMessages={isFocusedFile ? state.aiHistoryForSelection : []}
+        aiHistoryMessages={reference ? aiMessagesForFile : isFocusedFile ? state.aiHistoryForSelection : []}
         onCodeNavRequest={state.onCodeNavRequest}
         onTokenHoverEnter={state.onTokenHoverEnter}
         onTokenHoverLeave={state.onTokenHoverLeave}
         reviewFilePaths={reviewFilePaths}
         onOpenReviewFile={state.openDiffFile}
-        markdownPreviewSupported={!!state.markdownPreview}
+        markdownPreviewSupported={!reference && !!state.markdownPreview}
         markdownView={state.markdownPreview ? state.markdownPreview.viewOf(file.path) : 'source'}
         markdownViewDisabledReason={state.markdownPreview?.lockReason(file.path) ?? null}
         onMarkdownViewChange={state.markdownPreview
