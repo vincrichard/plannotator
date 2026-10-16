@@ -144,7 +144,8 @@ export function useAgentJobs(
   const [jobs, setJobs] = useState<AgentJobInfo[]>([]);
   const [jobLogs, setJobLogs] = useState<Map<string, string>>(new Map());
   const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
-  const versionRef = useRef(0);
+  // Zero is a valid empty-store version; -1 requests the initial full snapshot.
+  const versionRef = useRef(-1);
   const fallbackRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const receivedSnapshotRef = useRef(false);
@@ -169,6 +170,7 @@ export function useAgentJobs(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    versionRef.current = -1;
     receivedSnapshotRef.current = false;
     fallbackRef.current = false;
 
@@ -237,7 +239,7 @@ export function useAgentJobs(
     async function fetchSnapshot() {
       try {
         const url =
-          versionRef.current > 0
+          versionRef.current >= 0
             ? `${JOBS_URL}?since=${versionRef.current}`
             : JOBS_URL;
 
@@ -247,6 +249,7 @@ export function useAgentJobs(
         if (!res.ok) return;
 
         const data = await res.json();
+        if (cancelled) return;
         if (Array.isArray(data.jobs)) {
           setJobs(data.jobs);
         }

@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false, addedLines = 1000) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -40,8 +40,8 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
   writeFileSync(join(repo, 'a-main.ts'), "import { widget } from './helper';\nexport const main = widget(10);\n");
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const next = widget(2);\nexport const extra = widget(3);\n");
   if (addedReference) {
-    writeFileSync(join(repo, 'd-added.ts'), Array.from({ length: 1000 }, (_, i) =>
-      i === 239 ? 'const result = widget(7);\n' : `export const row${i} = { name: 'cold reference row ${i}', value: ${i}, enabled: true };\n`).join(''));
+    writeFileSync(join(repo, 'd-added.ts'), Array.from({ length: addedLines }, (_, i) =>
+      i === 9 ? '\n' : i === Math.min(239, addedLines - 1) ? 'const result = widget(7);\n' : `export const row${i} = { name: 'cold reference row ${i}', value: ${i}, enabled: true };\n`).join(''));
     git('add', 'd-added.ts');
   }
   if (staged) {
@@ -534,4 +534,68 @@ test('one method control expands all its hunks in all-files and single-file view
       expect.objectContaining({ filePath: 'methods.py', lineStart: 150, lineEnd: 150, side: 'new', text: 'expanded method context' }),
     ]));
   } finally { await session.close(); }
+});
+
+
+// The proxy deliberately uses snapshot polling. Version zero used to rebuild
+// the single-file renderer every tick, dropping hover affordances in References.
+test('proxy polling keeps nested reference hover and near-top scroll stable', async ({ page }) => {
+  await page.route('**/api/{external-annotations,agents/jobs}/stream', route => route.fulfill({ status: 503, body: 'Use snapshot polling' }));
+  const session = await review(page, false, 60, true, false, 100);
+  try {
+    await openReferences(page);
+    const helper = page.locator('[data-reference-file="helper.ts"]');
+    await helper.locator('[data-line="1"] [data-char]').filter({ hasText: /^widget$/ }).click({ modifiers: ['ControlOrMeta'] });
+    await choose(page, ':100 const result = widget(7);');
+    const side = page.locator('[data-reference-file="d-added.ts"]');
+    await expect(side.locator('[data-line="100"]')).toBeInViewport();
+    await side.hover();
+    await side.locator('diffs-container').evaluate(element => {
+      element.dispatchEvent(new WheelEvent('wheel', { bubbles: true })); // End selection following.
+      let viewport = element.parentElement;
+      while (viewport && !(viewport.scrollHeight > viewport.clientHeight && getComputedStyle(viewport).overflowY === 'auto')) viewport = viewport.parentElement;
+      if (!viewport) throw new Error('Missing diff scroll viewport');
+      viewport.scrollTop = 120;
+      viewport.dispatchEvent(new Event('scroll'));
+    });
+    const token = side.locator('[data-line="11"] [data-char]').filter({ hasText: /^row10$/ });
+    await expect(token).toBeInViewport();
+    await page.keyboard.down('ControlOrMeta');
+    await token.hover();
+    await expect(token).toHaveClass(/pn-token-nav/);
+    const underlineStable = await token.evaluate(async element => {
+      for (let i = 0; i < 40; i++) {
+        if (!element.isConnected || !element.classList.contains('pn-token-nav')) return false;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return true;
+    });
+    expect(underlineStable).toBe(true);
+    await page.keyboard.up('ControlOrMeta');
+    await selectLine(page, side, 10, 'additions');
+    await page.keyboard.press('Escape');
+    const blank = side.locator('[data-column-number="10"]').last();
+    await blank.hover();
+    const plus = blank.locator('[data-utility-button]');
+    await expect(plus).toBeVisible();
+    expect(await plus.evaluate(async element => {
+      for (let i = 0; i < 40; i++) {
+        if (!element.isConnected || getComputedStyle(element).visibility === 'hidden') return false;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return true;
+    })).toBe(true);
+    const offsets = await side.locator('diffs-container').evaluate(async element => {
+      let viewport = element.parentElement;
+      while (viewport && !(viewport.scrollHeight > viewport.clientHeight && getComputedStyle(viewport).overflowY === 'auto')) viewport = viewport.parentElement;
+      if (!viewport) throw new Error('Missing diff scroll viewport');
+      viewport.scrollTop = 120;
+      viewport.dispatchEvent(new Event('scroll'));
+      const offsets: number[] = [];
+      for (let i = 0; i < 40; i++) { offsets.push(viewport.scrollTop); await new Promise(resolve => setTimeout(resolve, 50)); }
+      return offsets;
+    });
+    expect(Math.min(...offsets)).toBe(120);
+    expect(Math.max(...offsets)).toBe(120);
+  } finally { await page.close(); await session.close(); }
 });

@@ -33,7 +33,7 @@ export interface ExternalAnnotationTransport<T extends { id: string; source?: st
     onEvent: (event: ExternalAnnotationEvent<T>) => void,
     onError: () => void,
   ): () => void;
-  /** Fetch a version-gated snapshot. Resolves null when there are no changes (304). */
+  /** Fetch a version-gated snapshot (-1 for the initial read). Null means unchanged (304). */
   getSnapshot(since: number): Promise<{ annotations: T[]; version: number } | null>;
   add(items: T[]): Promise<void>;
   remove(id: string): Promise<void>;
@@ -64,7 +64,7 @@ function createDefaultTransport<T extends { id: string; source?: string }>(): Ex
       return () => es.close();
     },
     async getSnapshot(since) {
-      const url = since > 0 ? `${SNAPSHOT_URL}?since=${since}` : SNAPSHOT_URL;
+      const url = since >= 0 ? `${SNAPSHOT_URL}?since=${since}` : SNAPSHOT_URL;
       const res = await fetch(url);
       if (res.status === 304) return null; // No changes
       if (!res.ok) return null;
@@ -145,7 +145,8 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
   const onSessionClosedRef = useRef(options?.onSessionClosed);
   onSessionClosedRef.current = options?.onSessionClosed;
   const [annotations, setAnnotations] = useState<T[]>([]);
-  const versionRef = useRef(0);
+  // Zero is a valid empty-store version; -1 requests the initial full snapshot.
+  const versionRef = useRef(-1);
   const fallbackRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const receivedSnapshotRef = useRef(false);
@@ -158,6 +159,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    versionRef.current = -1;
 
     // Reset fallback state on (re-)enable so a false→true toggle re-attempts SSE
     // instead of inheriting a stale "already fell back" flag and silently stalling.
@@ -241,7 +243,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
     async function fetchSnapshot() {
       try {
         const snap = await transport.getSnapshot(versionRef.current);
-        if (snap === null) return; // No changes (304) or unavailable
+        if (cancelled || snap === null) return; // No changes (304) or unavailable
         setAnnotations(snap.annotations);
         versionRef.current = snap.version;
       } catch {
