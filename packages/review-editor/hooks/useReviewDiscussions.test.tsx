@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { useReviewDiscussionState, mergeDiscussionComments } from './useReviewDiscussions';
+import { ReviewDiscussionsProvider, useReviewDiscussionState, mergeDiscussionComments } from './useReviewDiscussions';
+import { QuestionBadge } from '../components/FileRowBits';
 import { adoptServerSession, __resetServerSessionForTests } from '@plannotator/ui/utils/serverSession';
 import type { ReviewDiscussion } from '../../core/review-discussions';
 let root: Root | undefined;
@@ -9,7 +10,10 @@ let host: HTMLElement | undefined;
 let originalFetch: typeof fetch;
 let discussions: ReturnType<typeof useReviewDiscussionState>;
 const anchor = { filePath: 'unchanged.ts', lineStart: 12, lineEnd: 14, side: 'old' as const };
-function Harness({ snapshot }: { snapshot: string }) { discussions = useReviewDiscussionState(snapshot); return null; }
+function Harness({ snapshot }: { snapshot: string }) { discussions = useReviewDiscussionState(snapshot); return <ReviewDiscussionsProvider value={{ ...discussions, conversionReady: true }}>
+  <div data-file="unchanged.ts"><QuestionBadge filePath="unchanged.ts" /></div>
+  <div data-file="other.ts"><QuestionBadge filePath="other.ts" /></div>
+</ReviewDiscussionsProvider>; }
 async function render(handler: (url: string, options?: RequestInit) => Promise<Response>) {
   originalFetch = globalThis.fetch;
   globalThis.fetch = Object.assign((url: string | URL | Request, options?: RequestInit) => handler(String(url), options), { preconnect: originalFetch.preconnect });
@@ -36,6 +40,34 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(discussions.drafts.one).toBe('Unsent follow-up');
     await act(async () => root!.render(<Harness snapshot="snapshot-two" />));
     expect(discussions.markers[0].id).toBe('discussion-marker-other-snapshot');
+  });
+
+  test('file question badges count unresolved threads, not messages, and follow resolution and snapshot changes', async () => {
+    const thread: ReviewDiscussion = { id: 'one', snapshotId: 'snapshot-one', anchor, messages: [
+      { id: 'q', role: 'user', text: 'Why?', createdAt: 1 },
+      { id: 'answer', role: 'assistant', text: 'Because…', createdAt: 2 },
+      { id: 'follow-up', role: 'user', text: 'And?', createdAt: 3 },
+    ], status: 'answered', createdAt: 1, updatedAt: 3 };
+    let threads: ReviewDiscussion[] = [thread,
+      { ...thread, id: 'running', status: 'answering' },
+      { ...thread, id: 'failed', status: 'error', anchor: { ...anchor, filePath: 'other.ts' } },
+      { ...thread, id: 'old', snapshotId: 'snapshot-two' },
+      { ...thread, id: 'resolved', status: 'resolved' },
+      { ...thread, id: 'converted', status: 'converted' },
+    ];
+    await render(async (_url, options) => {
+      if (options) threads = threads.map(t => _url.endsWith('/' + t.id) ? { ...t, status: JSON.parse(String(options.body)).action === 'resolve' ? 'resolved' : 'converted' } : t);
+      return Response.json({ supported: true, available: true, threads });
+    });
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="2 unresolved questions"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="other.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    await act(async () => { await discussions.update('one', 'resolve'); });
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    await act(async () => { await discussions.update('running', 'convert', 'Change it'); });
+    expect(host!.querySelector('[data-file="unchanged.ts"]')!.textContent).toBe('');
+    await act(async () => root!.render(<Harness snapshot="snapshot-two" />));
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="other.ts"]')!.textContent).toBe('');
   });
 
   test('retry after a lost response reuses message identity and echoes the server-session guard', async () => {

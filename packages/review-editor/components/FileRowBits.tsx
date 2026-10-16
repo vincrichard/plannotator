@@ -1,4 +1,6 @@
 import React from 'react';
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
+import { QuestionMarkIcon } from './QuestionMarkIcon';
 import { Tooltip } from '@plannotator/ui/components/Tooltip';
 
 /**
@@ -137,6 +139,22 @@ export const AnnotationBadge: React.FC<{ count: number }> = ({ count }) => {
       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
       </svg>
+      {count}
+    </span>
+  );
+};
+
+/** Open discussions count once per thread, including answers awaiting resolution. */
+export const QuestionBadge: React.FC<{ filePath: string }> = ({ filePath }) => {
+  const discussions = useReviewDiscussions();
+  const count = discussions?.threads.filter(thread =>
+    thread.snapshotId === discussions.snapshotId && thread.anchor.filePath === filePath
+    && thread.status !== 'resolved' && thread.status !== 'converted').length ?? 0;
+  if (!count) return null;
+  const label = `${count} unresolved question${count === 1 ? '' : 's'}`;
+  return (
+    <span className="flex items-center gap-0.5 text-[10px] text-primary flex-shrink-0" title={label} aria-label={label}>
+      <QuestionMarkIcon />
       {count}
     </span>
   );

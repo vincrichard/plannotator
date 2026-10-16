@@ -1,7 +1,7 @@
 import React from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import type { FileTreeNode as TreeNode } from '../utils/buildFileTree';
-import { ViewedControl, StageControl, AnnotationBadge, CommittedDot } from './FileRowBits';
+import { ViewedControl, StageControl, AnnotationBadge, QuestionBadge, CommittedDot } from './FileRowBits';
 import {
   DiffFileTreeFolderRow,
   DiffFileTreeFileRowContent,
@@ -171,6 +171,7 @@ export const FileTreeNodeItem: React.FC<FileTreeNodeProps> = ({
                 </span>
               )}
               <AnnotationBadge count={annotationCount} />
+              <QuestionBadge filePath={node.path} />
             </>}
             leading={<>
             {showViewedControls && (

@@ -152,6 +152,8 @@ test('questions run separately while reviewing; only converted requests enter pe
     await expect(page.getByRole('heading', { name: 'Discussions', exact: true })).toHaveCount(0);
     await expect(page.getByTitle('Ask agent', { exact: true })).toHaveCount(0);
     await expect.poll(async () => (await snapshot(page)).threads.length).toBe(1);
+    const questionBadge = page.locator('.file-tree-item').filter({ hasText: 'main.ts' }).getByLabel('1 unresolved question', { exact: true });
+    await expect(questionBadge).toBeVisible();
 
     // Selecting an unchanged reference while the first question runs must retain that question's old-side anchor.
     const token = main.locator('[data-additions] [data-line="2"] [data-char]').filter({ hasText: /^widget$/ });
@@ -197,7 +199,9 @@ test('questions run separately while reviewing; only converted requests enter pe
     expect(requests.filter(request => request.method === 'thread/resume')).toHaveLength(1);
     expect(requests.find(request => request.method === 'thread/resume').params.threadId).not.toBe(parentId);
 
+    await expect(questionBadge).toBeVisible(); // An answer and follow-ups do not resolve the thread.
     await oldThread.getByRole('button', { name: 'Resolve', exact: true }).click();
+    await expect(questionBadge).toHaveCount(0);
     await expect(oldThread).toHaveCount(0);
     await main.locator('[data-additions] [data-line="2"] [data-char]').filter({ hasText: /^widget$/ }).click({ modifiers: ['ControlOrMeta'] });
     const helperThread = page.locator(`[data-discussion-id="${helper.id}"]`);

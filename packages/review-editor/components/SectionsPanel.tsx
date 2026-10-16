@@ -15,6 +15,7 @@ import {
   ChangeTypeLetter,
   StageControl,
   AnnotationBadge,
+  QuestionBadge,
   DiffCounts,
   CommittedDot,
   TruncatedPath,
@@ -196,6 +197,7 @@ const SectionRow: React.FC<{
         <ChangeTypeLetter status={file.status} oldPath={file.oldPath} untracked={item.group === 'untracked'} />
         <TruncatedPath path={file.path} />
         <AnnotationBadge count={annotationCount} />
+        <QuestionBadge filePath={file.path} />
       </div>
       <DiffCounts additions={file.additions} deletions={file.deletions} />
     </button>
