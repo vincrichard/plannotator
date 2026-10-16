@@ -306,3 +306,39 @@ test('failed initial draft read blocks conversion until saved comments load succ
     expect(session.output()).toBe('');
   } finally { await session.close(); }
 });
+
+
+for (const failure of ['ended', 'disconnected'] as const) {
+  test(`${failure} review retains initial and follow-up drafts and offers recovery`, async ({ page }) => {
+    const session = await review(page);
+    try {
+      const main = page.locator('diffs-container').first();
+      await selectLine(page, main, 2, 'deletions');
+      await page.getByPlaceholder('Leave feedback...').fill('First question');
+      await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+      const followUp = page.getByLabel('Follow-up question', { exact: true });
+      await followUp.fill('Unsent follow-up');
+      await selectLine(page, main, 2, 'additions');
+      await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+      const input = page.getByPlaceholder('Ask about this code...');
+      await input.fill('Unsent initial question');
+      await page.route('**/api/review-discussions**', route => failure === 'ended'
+        ? route.fulfill({ status: 410, contentType: 'text/plain', body: 'Review has ended or is unavailable' })
+        : route.abort());
+      await page.getByRole('button', { name: 'Ask', exact: true }).click();
+      await expect(page.getByRole('alert').filter({ hasText: failure === 'ended' ? 'This review has ended' : 'Cannot reach this review' }).first()).toBeVisible();
+      await expect(input).toHaveValue('Unsent initial question');
+      await expect(followUp).toHaveValue('Unsent follow-up');
+      const downloading = page.waitForEvent('download');
+      await page.getByRole('button', { name: 'Download saved questions', exact: true }).click();
+      const download = await downloading;
+      const saved = JSON.parse(readFileSync((await download.path())!, 'utf8'));
+      expect(JSON.stringify(saved)).toContain('Unsent initial question');
+      expect(JSON.stringify(saved)).toContain('Unsent follow-up');
+      expect(Object.values(saved.questions)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ anchor: expect.objectContaining({ filePath: 'main.ts', lineStart: 2, side: 'new' }) }),
+      ]));
+      expect(session.output()).toBe('');
+    } finally { await session.close(); }
+  });
+}

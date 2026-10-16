@@ -11,7 +11,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   const [converting, setConverting] = useState(false);
   const draft = discussions.drafts[thread.id] ?? '';
   const readonly = thread.snapshotId !== discussions.snapshotId;
-  const busy = pending || thread.status === 'answering';
+  const busy = pending || thread.status === 'answering' || discussions.ended;
   const unread = thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt;
   const run = async (action: () => Promise<unknown>) => {
     setPending(true); setError(undefined);
@@ -31,7 +31,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
         <div className="text-xs text-muted-foreground">{message.role === 'user' ? 'You' : 'Agent'}</div>
         <div className="review-comment-body">{renderInlineMarkdown(message.text)}</div>
       </div>)}
-      {(error || thread.error) && <p role="alert" className="text-xs text-destructive">{error ?? thread.error}</p>}
+      {(discussions.ended || error || thread.error) && <p role="alert" className="text-xs text-destructive">{discussions.ended ? discussions.error : error ?? thread.error}</p>}
       {!discussions.conversionReady && <p className="text-xs text-muted-foreground">{discussions.conversionUnavailableReason}</p>}
       {readonly && <p className="text-xs text-muted-foreground">This discussion belongs to another review snapshot.</p>}
       {thread.status === 'resolved' ? <button className="review-toolbar-btn" disabled={pending || readonly} onClick={() => void run(() => discussions.update(thread.id, 'reopen'))}>Reopen</button> : <>

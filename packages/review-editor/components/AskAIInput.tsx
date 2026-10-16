@@ -14,6 +14,7 @@ interface AskAIInputProps {
   isLoading: boolean;
   /** Pre-filled text from the comment textarea */
   initialText?: string;
+  onQuestionChange?: (text: string) => void;
   /** AI messages that overlap the current line selection */
   aiHistory: AIChatEntry[];
   onViewResponse?: (questionId: string) => void;
@@ -30,6 +31,7 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
   onCancel,
   isLoading,
   initialText = '',
+  onQuestionChange,
   aiHistory,
   onViewResponse,
   onSwitchToComment,
@@ -38,7 +40,9 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
   const discussions = useReviewDiscussions();
   const AskIcon = discussions?.supported ? QuestionMarkIcon : SparklesIcon;
   const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
-  const [question, setQuestion] = useState(initialText);
+  const [localQuestion, setLocalQuestion] = useState(initialText);
+  const question = onQuestionChange ? initialText : localQuestion;
+  const setQuestion = onQuestionChange ?? setLocalQuestion;
 
   const handleSubmit = async () => {
     if (!question.trim() || isLoading) return;

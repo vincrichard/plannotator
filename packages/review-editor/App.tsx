@@ -50,6 +50,7 @@ import { configStore, useConfigValue, setReviewPanelView } from '@plannotator/ui
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { ReviewEndedBanner } from './components/ReviewEndedBanner';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
@@ -6343,6 +6344,7 @@ const ReviewApp: React.FC = () => {
       />
     )}
 
+    <ReviewEndedBanner />
     <ServerSessionReplacedBanner />
 
     <Toaster

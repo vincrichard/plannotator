@@ -13,19 +13,35 @@ interface Snapshot {
   version?: number;
 }
 interface CreateQuestion { id: string; snapshotId?: string; anchor: ReviewDiscussionAnchor; text: string; codeContext?: string }
+const disconnectedMessage = 'Cannot reach this review. Unsent questions are kept in this tab. Check the connection or download saved questions before reopening.';
+const endedMessage = 'This review has ended. Your question was not sent. Keep this tab open to copy unsent text, or download saved questions before starting another review.';
 const markerPrefix = 'discussion-marker-';
 export function discussionIdFromMarker(id: string) { return id.startsWith(markerPrefix) ? id.slice(markerPrefix.length) : null; }
 
 export function useReviewDiscussionState(snapshotId?: string) {
   const [state, setState] = useState<Snapshot>({ available: false, threads: [] });
   const [error, setError] = useState<string>();
-  const [failedQuestions, setFailedQuestions] = useState<Record<string, CreateQuestion>>({});
   const storageKey = `review-discussion-drafts:${location.pathname}:${currentServerSession() ?? 'loading'}`;
+  const [disconnected, setDisconnected] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const endedRef = useRef(false);
+  const markEnded = useCallback(() => { endedRef.current = true; setEnded(true); setError(endedMessage); }, []);
+  const [failedQuestions, setFailedQuestions] = useState<Record<string, CreateQuestion>>(() => {
+    try { return JSON.parse(sessionStorage.getItem(storageKey + ':pending') ?? '{}'); } catch { return {}; }
+  });
+  const saveFailedQuestions = useCallback((update: (previous: Record<string, CreateQuestion>) => Record<string, CreateQuestion>) => {
+    setFailedQuestions(previous => {
+      const next = update(previous);
+      try { sessionStorage.setItem(storageKey + ':pending', JSON.stringify(next)); } catch { /* Keep the in-memory copy. */ }
+      return next;
+    });
+  }, [storageKey]);
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try { return JSON.parse(sessionStorage.getItem(storageKey) ?? '{}'); } catch { return {}; }
   });
   useEffect(() => {
     try { setDrafts(JSON.parse(sessionStorage.getItem(storageKey) ?? '{}')); } catch { setDrafts({}); }
+    try { setFailedQuestions(JSON.parse(sessionStorage.getItem(storageKey + ':pending') ?? '{}')); } catch { setFailedQuestions({}); }
   }, [storageKey]);
   const [expandedThreads, setExpandedThreads] = useState<Record<string, boolean>>({});
   const setThreadExpanded = useCallback((id: string, expanded: boolean) => {
@@ -36,41 +52,48 @@ export function useReviewDiscussionState(snapshotId?: string) {
   const mounted = useRef(true);
   const refresh = useCallback(async () => {
     const before = revision.current;
-    const response = await fetch('/api/review-discussions');
+    const response = await fetch('/api/review-discussions').catch(() => { if (mounted.current) setDisconnected(true); throw new Error(disconnectedMessage); });
+    if (response.status === 410) { if (mounted.current) markEnded(); return; }
     if (response.status === 404) return;
-    if (!response.ok) throw new Error('Could not load discussions. Retrying…');
+    if (!response.ok) { if (mounted.current) setDisconnected(true); throw new Error(disconnectedMessage); }
+    if (mounted.current) setDisconnected(false);
     const next: Snapshot = await response.json();
     if (mounted.current && before === revision.current) setState(previous => (next.version ?? 0) < (previous.version ?? 0) || JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
-  }, []);
+  }, [markEnded]);
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try { await refresh(); } catch (cause) { if (!cancelled) setError(String(cause instanceof Error ? cause.message : cause)); }
-      if (!cancelled) timer = setTimeout(poll, 1000);
+      if (!cancelled && !endedRef.current) timer = setTimeout(poll, 1000);
     };
     void poll();
     return () => { cancelled = true; mounted.current = false; clearTimeout(timer); };
   }, [refresh]);
   const request = useCallback(async (path: string, method: string, body: object) => {
+    if (endedRef.current) throw new Error(endedMessage);
     revision.current++;
     setError(undefined);
-    const response = await fetch(`/api/review-discussions${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withServerSession(body)) });
-    await noteServerSessionMismatch(response);
-    const result = await response.json();
+    const response = await fetch(`/api/review-discussions${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withServerSession(body)) }).catch(() => { setDisconnected(true); throw new Error(disconnectedMessage); });
+    if (response.status === 410) { markEnded(); throw new Error(endedMessage); }
+    if (await noteServerSessionMismatch(response)) throw new Error('This address now belongs to a different review. Your question was not sent. Copy it before reloading.');
+    if (response.status === 401 || response.status === 403) throw new Error('Review access was lost. Your question is kept; reopen the original private access link.');
+    const result = await response.json().catch(() => { throw new Error(disconnectedMessage); });
+    if (response.status === 409 && result.error === 'This review has ended.') { markEnded(); throw new Error(endedMessage); }
     if (!response.ok) throw new Error(result.error ?? 'Could not save discussion');
     revision.current++;
     try { await refresh(); } catch { /* The mutation succeeded; polling will recover its snapshot. */ }
     return result;
-  }, [refresh]);
+  }, [refresh, markEnded]);
   const create = useCallback(async (anchor: ReviewDiscussionAnchor, text: string, codeContext?: string, retry?: CreateQuestion) => {
     const question = retry ?? Object.values(failedQuestions).find(previous =>
       previous.snapshotId === snapshotId && previous.text === text && previous.codeContext === codeContext
       && JSON.stringify(previous.anchor) === JSON.stringify(anchor)) ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext };
-    try { await request('', 'POST', question); setThreadExpanded(question.id, true); setFailedQuestions(previous => { const next = { ...previous }; delete next[question.id]; return next; }); return true; }
-    catch (cause) { setFailedQuestions(previous => ({ ...previous, [question.id]: question })); setError(cause instanceof Error ? cause.message : String(cause)); return false; }
-  }, [snapshotId, request, setThreadExpanded, failedQuestions]);
+    saveFailedQuestions(previous => ({ ...previous, [question.id]: question }));
+    try { await request('', 'POST', question); setThreadExpanded(question.id, true); saveFailedQuestions(previous => { const next = { ...previous }; delete next[question.id]; return next; }); return true; }
+    catch (cause) { saveFailedQuestions(previous => ({ ...previous, [question.id]: question })); setError(cause instanceof Error ? cause.message : String(cause)); return false; }
+  }, [snapshotId, request, setThreadExpanded, failedQuestions, saveFailedQuestions]);
   const pendingMessages = useRef(new Map<string, { id: string; text: string }>());
   const send = useCallback(async (id: string, text: string) => {
     let message = pendingMessages.current.get(id);
@@ -90,7 +113,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
   const markers = useMemo<CodeAnnotation[]>(() => state.threads.filter(thread => thread.status !== 'converted' && thread.status !== 'resolved' && (thread.anchor.scope ?? 'line') === 'line' && thread.snapshotId === snapshotId).map(thread => ({
     ...thread.anchor, id: markerPrefix + thread.id, type: 'comment', text: `${thread.status}:${thread.updatedAt}`, createdAt: thread.createdAt,
   })), [state.threads, snapshotId]);
-  return { ...state, snapshotId, markers, error, failedQuestions, create, send, update, drafts, setDraft, seen, markRead, expandedThreads, setThreadExpanded };
+  return { ...state, snapshotId, markers, error, ended, disconnected, connectionError: ended ? endedMessage : disconnected ? disconnectedMessage : undefined, failedQuestions, create, send, update, drafts, setDraft, seen, markRead, expandedThreads, setThreadExpanded };
 }
 export type ReviewDiscussions = ReturnType<typeof useReviewDiscussionState> & {
   conversionReady: boolean;

@@ -52,6 +52,10 @@ interface Draft {
 const draftStore = new Map<string, Draft>();
 const restoreDraftKeyByFilePath = new Map<string, string>();
 
+export function getPendingReviewDrafts() {
+  return [...draftStore].map(([location, draft]) => ({ location, range: draft.range, text: draft.commentText, suggestedCode: draft.suggestedCode }));
+}
+
 function draftKey(filePath: string, range: SelectedLineRange): string {
   const start = Math.min(range.start, range.end);
   const end = Math.max(range.start, range.end);
@@ -122,6 +126,9 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
       currentDraftKeyRef.current = null;
     }
   }, [filePath]);
+
+  // Keep the recovery export current even when the server ends with a composer open.
+  useEffect(() => { saveDraft(); }, [commentText, suggestedCode, conventionalLabel, decorations, saveDraft]);
 
   // Save draft on unmount (e.g. file switch)
   useEffect(() => {

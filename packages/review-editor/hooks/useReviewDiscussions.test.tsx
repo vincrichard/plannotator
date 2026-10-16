@@ -70,6 +70,34 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(host!.querySelector('[data-file="other.ts"]')!.textContent).toBe('');
   });
 
+  test('plain-text ended responses retain unsent questions and follow-ups across remounts', async () => {
+    let ended = false;
+    await render(async (_url, options) => {
+      if (options || ended) { ended = true; return new Response('Review has ended', { status: 410 }); }
+      return Response.json({ supported: true, available: true, threads: [] });
+    });
+    await act(async () => discussions.setDraft('existing-thread', 'Unsent follow-up'));
+    await act(async () => expect(await discussions.create(anchor, 'Unsent initial question')).toBe(false));
+    expect(discussions.ended).toBe(true);
+    expect(discussions.error).toContain('This review has ended');
+    expect(Object.values(discussions.failedQuestions)[0]).toMatchObject({ anchor, text: 'Unsent initial question' });
+    await act(async () => root!.unmount()); root = createRoot(host!);
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    expect(discussions.drafts['existing-thread']).toBe('Unsent follow-up');
+    expect(Object.values(discussions.failedQuestions)[0].text).toBe('Unsent initial question');
+  });
+
+  test('a network interruption preserves the question without declaring the review ended', async () => {
+    await render(async (_url, options) => {
+      if (options) throw new TypeError('Failed to fetch');
+      return Response.json({ supported: true, available: true, threads: [] });
+    });
+    await act(async () => expect(await discussions.create(anchor, 'Keep this question')).toBe(false));
+    expect(discussions.ended).toBe(false);
+    expect(discussions.connectionError).toContain('Cannot reach this review');
+    expect(Object.values(discussions.failedQuestions)[0].text).toBe('Keep this question');
+  });
+
   test('retry after a lost response reuses message identity and echoes the server-session guard', async () => {
     const bodies: Record<string, unknown>[] = [];
     let fail = true;

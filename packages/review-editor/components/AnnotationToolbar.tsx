@@ -226,6 +226,8 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
         <AskAIInput
           lineStart={toolbarState.range.start}
           lineEnd={toolbarState.range.end}
+          initialText={commentText}
+          onQuestionChange={setCommentText}
           onSubmit={handleAskAISubmit}
           onCancel={handleAskAIClose}
           isLoading={isAILoading || sendingQuestion}
