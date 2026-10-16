@@ -135,6 +135,7 @@ import {
 } from './components/ReviewHeaderMenu';
 import { ReviewSidebar } from './components/ReviewSidebar';
 import type { ReviewSidebarTab } from './components/ReviewSidebar';
+import { QuestionMarkIcon } from './components/QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
 import { useSidebar } from '@plannotator/ui/hooks/useSidebar';
@@ -5486,7 +5487,7 @@ const ReviewApp: React.FC = () => {
                 }`}
                 title={discussions.supported ? 'Ask agent' : 'AI Chat'}
               >
-                <SparklesIcon className="w-4 h-4" />
+                {discussions.supported ? <QuestionMarkIcon className="w-4 h-4" /> : <SparklesIcon className="w-4 h-4" />}
                 {(discussions.supported ? discussions.threads.some(thread => thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt) : aiMessages.length > 0) && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
                   <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-primary" />
                 )}

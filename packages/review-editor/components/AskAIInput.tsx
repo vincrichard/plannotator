@@ -1,6 +1,7 @@
 import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useState } from 'react';
 import { formatLineRange } from '../utils/formatLineRange';
+import { QuestionMarkIcon } from './QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import type { AIChatEntry } from '../hooks/useAIChat';
 import { submitHint } from '@plannotator/ui/utils/platform';
@@ -35,6 +36,7 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
   dragHandleProps,
 }) => {
   const discussions = useReviewDiscussions();
+  const AskIcon = discussions?.supported ? QuestionMarkIcon : SparklesIcon;
   const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const [question, setQuestion] = useState(initialText);
 
@@ -48,7 +50,7 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
     <div className="w-80 max-w-full">
       <div className="flex items-center justify-between mb-2" {...dragHandleProps}>
         <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-          <SparklesIcon className="w-3 h-3 text-primary" />
+          <AskIcon className="w-3 h-3 text-primary" />
           {askLabel} · {formatLineRange(lineStart, lineEnd)}
         </span>
         <button
@@ -107,7 +109,7 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
             </>
           ) : (
             <>
-              <SparklesIcon className="w-3 h-3" />
+              <AskIcon className="w-3 h-3" />
               Ask
             </>
           )}

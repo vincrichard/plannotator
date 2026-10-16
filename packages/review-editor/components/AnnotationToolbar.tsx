@@ -5,6 +5,7 @@ import { ToolbarState } from '../hooks/useAnnotationToolbar';
 import { useTabIndent } from '../hooks/useTabIndent';
 import { formatLineRange, formatTokenContext } from '../utils/formatLineRange';
 import { AskAIInput } from './AskAIInput';
+import { QuestionMarkIcon } from './QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ConventionalLabelPicker, type LabelDef } from './ConventionalLabelPicker';
 import type { ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
@@ -125,6 +126,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   aiHistoryMessages = [],
 }) => {
   const discussions = useReviewDiscussions();
+  const AskIcon = discussions?.supported ? QuestionMarkIcon : SparklesIcon;
   const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const coarsePointer = hasPrimaryCoarsePointer();
   const visibleBounds = useVisibleViewportBounds(coarsePointer ? 16 : 0);
@@ -359,9 +361,9 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
               <button
                 onClick={handleAskAIClick}
                 className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
-                title={commentText.trim() ? 'Ask AI this question' : 'Switch to AI mode'}
+                title={commentText.trim() ? `${askLabel} this question` : `Switch to ${askLabel} mode`}
               >
-                <SparklesIcon className="w-3 h-3" />
+                <AskIcon className="w-3 h-3" />
                 {askLabel}
                 {aiHistoryMessages.length > 0 && (
                   <span className="text-[9px] font-mono bg-muted px-1 py-0.5 rounded">

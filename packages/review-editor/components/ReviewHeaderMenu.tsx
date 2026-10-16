@@ -9,6 +9,8 @@ import { useTheme } from '@plannotator/ui/components/ThemeProvider';
 import { THEME_MODES } from '@plannotator/ui/components/themeModes';
 import { MenuVersionSection } from '@plannotator/ui/components/MenuVersionSection';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
+import { QuestionMarkIcon } from './QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { PRPlatformIcon } from '@plannotator/ui/components/PRPlatformIcon';
 import { modKey } from '@plannotator/ui/utils/platform';
@@ -73,6 +75,7 @@ export const ReviewHeaderMenu: React.FC<ReviewHeaderMenuProps> = ({
   origin,
   isWSL = false,
 }) => {
+  const discussions = useReviewDiscussions();
   const { theme, setTheme } = useTheme();
 
   const showUpdateDot = !!updateInfo?.updateAvailable && !updateInfo.dismissed;
@@ -245,8 +248,8 @@ export const ReviewHeaderMenu: React.FC<ReviewHeaderMenuProps> = ({
                     closeMenu();
                     onOpenAI();
                   }}
-                  icon={<SparklesIcon className="w-3.5 h-3.5" />}
-                  label="AI Chat"
+                  icon={discussions?.supported ? <QuestionMarkIcon className="w-3.5 h-3.5" /> : <SparklesIcon className="w-3.5 h-3.5" />}
+                  label={discussions?.supported ? 'Ask agent' : 'AI Chat'}
                 />
               )}
               {onOpenAgents && (

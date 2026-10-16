@@ -1,6 +1,7 @@
 import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useRef, useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
+import { QuestionMarkIcon } from './QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { useReviewAnnotationToolbarShortcuts } from '@plannotator/ui/shortcuts';
 
@@ -38,6 +39,7 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   hasSuggestedCode = false,
 }) => {
   const discussions = useReviewDiscussions();
+  const AskIcon = discussions?.supported ? QuestionMarkIcon : SparklesIcon;
   const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const dialogRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -144,9 +146,9 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
                   onClick={handleAskAI}
                   disabled={!askAIEnabled}
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  title={askAIEnabled ? 'Ask AI this question' : 'Type a question to ask AI'}
+                  title={askAIEnabled ? `${askLabel} this question` : `Type a question to ${askLabel.toLowerCase()}`}
                 >
-                  <SparklesIcon className="w-3 h-3" />
+                  <AskIcon className="w-3 h-3" />
                   {askLabel}
                 </button>
               )}
