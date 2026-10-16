@@ -55,6 +55,21 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(bodies[2].id).not.toBe(bodies[1].id);
   });
 
+  test('retrying a question in the inline composer reuses its identity after a lost response', async () => {
+    const ids: string[] = [];
+    await render(async (_url, options) => {
+      if (!options) return Response.json({ supported: true, available: true, threads: [] });
+      ids.push(JSON.parse(String(options.body)).id);
+      if (ids.length === 1) throw new Error('Response lost');
+      return Response.json({ ok: true });
+    });
+    await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(false));
+    await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(true));
+    expect(ids[1]).toBe(ids[0]);
+    expect(discussions.expandedThreads[ids[0]]).toBe(true);
+    expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
+  });
+
   test('a later successful question does not discard a different failed question', async () => {
     await render(async (_url, options) => {
       if (!options) return Response.json({ supported: true, available: true, threads: [] });
@@ -75,6 +90,11 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     });
     await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(true));
     expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
+    const id = Object.keys(discussions.expandedThreads)[0];
+    expect(discussions.expandedThreads[id]).toBe(true);
+    await act(async () => discussions.setThreadExpanded(id, false));
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    expect(discussions.expandedThreads[id]).toBe(false);
   });
 });
 

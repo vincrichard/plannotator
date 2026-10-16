@@ -5,7 +5,7 @@ import { renderInlineMarkdown } from '../utils/renderInlineMarkdown';
 
 export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion }) {
   const discussions = useReviewDiscussions()!;
-  const [expanded, setExpanded] = useState(false);
+  const expanded = discussions.expandedThreads[thread.id] ?? false;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [converting, setConverting] = useState(false);
@@ -20,7 +20,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   };
   const send = () => run(async () => { await discussions.send(thread.id, draft.trim()); discussions.setDraft(thread.id, ''); });
   return <section className="review-comment" data-discussion-id={thread.id}>
-    <button className="w-full text-left text-xs flex items-center gap-2" aria-expanded={expanded} onClick={() => { setExpanded(!expanded); discussions.markRead(thread); }}>
+    <button className="w-full text-left text-xs flex items-center gap-2" aria-expanded={expanded} onClick={() => { discussions.setThreadExpanded(thread.id, !expanded); discussions.markRead(thread); }}>
       <span className="font-medium">Discussion</span>
       <span className="text-muted-foreground">{thread.status === 'answering' ? 'Answering…' : thread.status === 'answered' ? 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
       {unread && <span className="text-primary">Unread</span>}

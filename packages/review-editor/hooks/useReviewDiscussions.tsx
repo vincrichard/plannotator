@@ -27,6 +27,10 @@ export function useReviewDiscussionState(snapshotId?: string) {
   useEffect(() => {
     try { setDrafts(JSON.parse(sessionStorage.getItem(storageKey) ?? '{}')); } catch { setDrafts({}); }
   }, [storageKey]);
+  const [expandedThreads, setExpandedThreads] = useState<Record<string, boolean>>({});
+  const setThreadExpanded = useCallback((id: string, expanded: boolean) => {
+    setExpandedThreads(previous => ({ ...previous, [id]: expanded }));
+  }, []);
   const [seen, setSeen] = useState<Record<string, number>>({});
   const revision = useRef(0);
   const mounted = useRef(true);
@@ -61,10 +65,12 @@ export function useReviewDiscussionState(snapshotId?: string) {
     return result;
   }, [refresh]);
   const create = useCallback(async (anchor: ReviewDiscussionAnchor, text: string, codeContext?: string, retry?: CreateQuestion) => {
-    const question = retry ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext };
-    try { await request('', 'POST', question); setFailedQuestions(previous => { const next = { ...previous }; delete next[question.id]; return next; }); return true; }
+    const question = retry ?? Object.values(failedQuestions).find(previous =>
+      previous.snapshotId === snapshotId && previous.text === text && previous.codeContext === codeContext
+      && JSON.stringify(previous.anchor) === JSON.stringify(anchor)) ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext };
+    try { await request('', 'POST', question); setThreadExpanded(question.id, true); setFailedQuestions(previous => { const next = { ...previous }; delete next[question.id]; return next; }); return true; }
     catch (cause) { setFailedQuestions(previous => ({ ...previous, [question.id]: question })); setError(cause instanceof Error ? cause.message : String(cause)); return false; }
-  }, [snapshotId, request]);
+  }, [snapshotId, request, setThreadExpanded, failedQuestions]);
   const pendingMessages = useRef(new Map<string, { id: string; text: string }>());
   const send = useCallback(async (id: string, text: string) => {
     let message = pendingMessages.current.get(id);
@@ -84,7 +90,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
   const markers = useMemo<CodeAnnotation[]>(() => state.threads.filter(thread => thread.status !== 'converted' && thread.status !== 'resolved' && (thread.anchor.scope ?? 'line') === 'line' && thread.snapshotId === snapshotId).map(thread => ({
     ...thread.anchor, id: markerPrefix + thread.id, type: 'comment', text: `${thread.status}:${thread.updatedAt}`, createdAt: thread.createdAt,
   })), [state.threads, snapshotId]);
-  return { ...state, snapshotId, markers, error, failedQuestions, create, send, update, drafts, setDraft, seen, markRead };
+  return { ...state, snapshotId, markers, error, failedQuestions, create, send, update, drafts, setDraft, seen, markRead, expandedThreads, setThreadExpanded };
 }
 export type ReviewDiscussions = ReturnType<typeof useReviewDiscussionState> & {
   conversionReady: boolean;

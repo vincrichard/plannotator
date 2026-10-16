@@ -221,6 +221,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
           }
       }
     >
+      {discussions?.supported && discussions.error && <p role="alert" className="text-xs text-destructive mb-2">{discussions.error}</p>}
       {askAIMode ? (
         <AskAIInput
           lineStart={toolbarState.range.start}

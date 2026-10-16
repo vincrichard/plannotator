@@ -135,7 +135,6 @@ import {
 } from './components/ReviewHeaderMenu';
 import { ReviewSidebar } from './components/ReviewSidebar';
 import type { ReviewSidebarTab } from './components/ReviewSidebar';
-import { QuestionMarkIcon } from './components/QuestionMarkIcon';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
 import { useSidebar } from '@plannotator/ui/hooks/useSidebar';
@@ -1880,7 +1879,6 @@ const ReviewApp: React.FC = () => {
 
     if (discussions.supported) {
       const { id: _id, type: _type, createdAt: _createdAt, ...anchor } = withPRContext({ id: '', type: 'comment', createdAt: 0, filePath, lineStart, lineEnd, side, scope: 'line' }, file);
-      reviewSidebar.open('ai');
       return discussions.create(anchor, question, selectedCode || undefined);
     }
 
@@ -1892,7 +1890,7 @@ const ReviewApp: React.FC = () => {
       side,
       selectedCode: selectedCode || undefined,
     });
-  }, [askAI, files, pendingSelection, discussions.supported, discussions.create, reviewSidebar.open, withPRContext]);
+  }, [askAI, files, pendingSelection, discussions.supported, discussions.create, withPRContext]);
 
   // Single-file surface: the focused file IS files[activeFileIndex].
   const handleAskAI = useCallback((question: string) => {
@@ -5477,7 +5475,7 @@ const ReviewApp: React.FC = () => {
                 )}
               </button>
             )}
-            {!isCompactTouchLayout && (discussions.supported || aiAvailable) && (
+            {!isCompactTouchLayout && !discussions.supported && aiAvailable && (
               <button
                 onClick={() => reviewSidebar.toggleTab('ai')}
                 className={`relative p-1.5 rounded-md transition-all ${
@@ -5485,10 +5483,10 @@ const ReviewApp: React.FC = () => {
                     ? 'bg-primary/15 text-primary'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
-                title={discussions.supported ? 'Ask agent' : 'AI Chat'}
+                title="AI Chat"
               >
-                {discussions.supported ? <QuestionMarkIcon className="w-4 h-4" /> : <SparklesIcon className="w-4 h-4" />}
-                {(discussions.supported ? discussions.threads.some(thread => thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt) : aiMessages.length > 0) && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
+                <SparklesIcon className="w-4 h-4" />
+                {aiMessages.length > 0 && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
                   <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -5528,7 +5526,7 @@ const ReviewApp: React.FC = () => {
                 setGuideOpen(true);
               } : undefined}
               onOpenAnnotations={isCompactTouchLayout ? () => reviewSidebar.open('annotations') : undefined}
-              onOpenAI={isCompactTouchLayout && (discussions.supported || aiAvailable) ? () => reviewSidebar.open('ai') : undefined}
+              onOpenAI={isCompactTouchLayout && !discussions.supported && aiAvailable ? () => reviewSidebar.open('ai') : undefined}
               onOpenAgents={isCompactTouchLayout && agentJobs.capabilities?.available ? () => reviewSidebar.open('agents') : undefined}
               compactDestination={compactReviewDestination}
               compactActions={compactReviewActions}

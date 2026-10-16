@@ -114,7 +114,16 @@ async function selectLine(page: Page, viewer: Locator, line: number, side: 'addi
 
 const snapshot = (page: Page) => page.evaluate(async () => (await fetch('/api/review-discussions')).json());
 const draft = (page: Page) => page.evaluate(async () => (await fetch('/api/draft')).json());
-const sidebar = (page: Page) => page.locator('aside').filter({ has: page.getByRole('heading', { name: 'Discussions', exact: true }) });
+async function askOnLine(page: Page, text: string) {
+  await selectLine(page, page.locator('diffs-container').first(), 2, 'additions');
+  await page.getByPlaceholder('Leave feedback...').fill(text);
+  await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+}
+async function expandThread(thread: Locator) {
+  await expect(thread).toBeVisible();
+  const header = thread.getByRole('button', { expanded: false });
+  if (await header.isVisible()) await header.click();
+}
 
 test.beforeAll(() => mkdirSync(proofDir, { recursive: true }));
 test.use({ viewport: { width: 1600, height: 1000 }, actionTimeout: 15_000, screenshot: 'only-on-failure' });
@@ -125,8 +134,23 @@ test('questions run separately while reviewing; only converted requests enter pe
     const main = page.locator('diffs-container').first();
     await selectLine(page, main, 2, 'deletions');
     await page.getByPlaceholder('Leave feedback...').fill('Why did the old call change?');
+    let loseResponse = true;
+    await page.route('**/api/review-discussions', async route => {
+      if (route.request().method() === 'POST' && loseResponse) {
+        loseResponse = false;
+        await route.fetch(); // Accepted by the server; only its reply is lost.
+        await route.abort();
+      } else await route.continue();
+    });
     await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
-    await expect(sidebar(page)).toContainText('Answering');
+    await expect(page.locator('.review-toolbar [role="alert"]')).toBeVisible();
+    await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('Why did the old call change?');
+    await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+    await expect(page.locator('diffs-container [data-discussion-id]')).toContainText('Answering');
+    await expect(page.locator('diffs-container').getByLabel('Follow-up question', { exact: true })).toBeVisible();
+    await page.unroute('**/api/review-discussions');
+    await expect(page.getByRole('heading', { name: 'Discussions', exact: true })).toHaveCount(0);
+    await expect(page.getByTitle('Ask agent', { exact: true })).toHaveCount(0);
     await expect.poll(async () => (await snapshot(page)).threads.length).toBe(1);
 
     // Selecting an unchanged reference while the first question runs must retain that question's old-side anchor.
@@ -145,13 +169,11 @@ test('questions run separately while reviewing; only converted requests enter pe
     await selectLine(page, main, 2, 'additions');
     await page.getByPlaceholder('Leave feedback...').fill('Keep the new call explicit.');
     await page.getByRole('button', { name: 'Add Comment', exact: true }).click();
-    if (!await sidebar(page).isVisible()) await page.getByTitle('Ask agent', { exact: true }).click();
     expect(JSON.stringify(await snapshot(page))).not.toMatch(/PRIVATE_PARTIAL_TEXT|PRIVATE_REASONING_TEXT/);
     await expect(page.locator('body')).not.toContainText('PRIVATE_');
     await expect.poll(async () => (await draft(page)).codeAnnotations?.length).toBe(1);
     await page.reload();
     await page.getByRole('button', { name: 'Restore', exact: true }).click();
-    await page.getByTitle('Ask agent', { exact: true }).click();
     await expect.poll(async () => (await snapshot(page)).threads.filter((thread: any) => thread.status === 'answering').length).toBe(2);
     expect(session.requests().filter(request => request.method === 'turn/start')).toHaveLength(2);
 
@@ -162,8 +184,8 @@ test('questions run separately while reviewing; only converted requests enter pe
     const helper = threads.find((thread: any) => thread.anchor.filePath === 'helper.ts');
     expect(old.anchor).toMatchObject({ lineStart: 2, lineEnd: 2, side: 'old' });
     expect(helper.anchor).toMatchObject({ lineStart: 2, lineEnd: 2, side: 'new' });
-    const oldThread = sidebar(page).locator(`[data-discussion-id="${old.id}"]`);
-    await oldThread.getByRole('button', { expanded: false }).click();
+    const oldThread = page.locator(`[data-discussion-id="${old.id}"]`);
+    await expandThread(oldThread);
     await expect(oldThread).toContainText('Completed answer for this discussion.');
     await oldThread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
     await oldThread.getByRole('button', { name: 'Send question', exact: true }).click();
@@ -177,8 +199,9 @@ test('questions run separately while reviewing; only converted requests enter pe
 
     await oldThread.getByRole('button', { name: 'Resolve', exact: true }).click();
     await expect(oldThread).toHaveCount(0);
-    const helperThread = sidebar(page).locator(`[data-discussion-id="${helper.id}"]`);
-    await helperThread.getByRole('button', { expanded: false }).click();
+    await main.locator('[data-additions] [data-line="2"] [data-char]').filter({ hasText: /^widget$/ }).click({ modifiers: ['ControlOrMeta'] });
+    const helperThread = page.locator(`[data-discussion-id="${helper.id}"]`);
+    await expandThread(helperThread);
     await helperThread.getByRole('button', { name: 'Request change', exact: true }).click();
     await helperThread.getByLabel('Change request', { exact: true }).fill('Document the helper multiplier.');
     await helperThread.getByRole('button', { name: 'Save change request', exact: true }).click();
@@ -213,14 +236,12 @@ test('interrupted conversion preserves existing draft; deleting a saved converte
     await page.getByPlaceholder('Leave feedback...').fill('Preserve my ordinary comment.');
     await page.getByRole('button', { name: 'Add Comment', exact: true }).click();
     await expect.poll(async () => (await draft(page)).codeAnnotations?.length).toBe(1);
-    await page.getByTitle('Ask agent', { exact: true }).click();
-    await sidebar(page).getByLabel('Ask about this review', { exact: true }).fill('What should change here?');
-    await sidebar(page).getByRole('button', { name: 'Ask agent', exact: true }).click();
+    await askOnLine(page, 'What should change here?');
     session.release();
     await expect.poll(async () => (await snapshot(page)).threads[0]?.status).toBe('answered');
     const id = (await snapshot(page)).threads[0].id;
-    const thread = sidebar(page).locator(`[data-discussion-id="${id}"]`);
-    await thread.getByRole('button', { expanded: false }).click();
+    const thread = page.locator(`[data-discussion-id="${id}"]`);
+    await expandThread(thread);
     await thread.getByRole('button', { name: 'Request change', exact: true }).click();
     await thread.getByLabel('Change request', { exact: true }).fill('Disposable converted request.');
     // Simulate losing the browser after conversion is durable but before the ordinary draft saves.
@@ -258,27 +279,24 @@ test('failed initial draft read blocks conversion until saved comments load succ
   await page.route('**/api/draft', route => route.request().method() === 'GET' ? route.abort() : route.continue());
   const session = await review(page);
   try {
-    await page.getByTitle('Ask agent', { exact: true }).click();
-    await sidebar(page).getByLabel('Ask about this review', { exact: true }).fill('Can we clarify this review?');
-    await sidebar(page).getByRole('button', { name: 'Ask agent', exact: true }).click();
+    await askOnLine(page, 'Can we clarify this review?');
     session.release();
     await expect.poll(async () => (await snapshot(page)).threads[0]?.status).toBe('answered');
     const id = (await snapshot(page)).threads[0].id;
-    const thread = sidebar(page).locator(`[data-discussion-id="${id}"]`);
-    await thread.getByRole('button', { expanded: false }).click();
+    const thread = page.locator(`[data-discussion-id="${id}"]`);
+    await expandThread(thread);
     await expect(thread.getByRole('button', { name: 'Request change', exact: true })).toBeDisabled();
     await expect(thread).toContainText(/reload before requesting changes/i);
     expect((await snapshot(page)).threads[0].status).toBe('answered');
     await page.unroute('**/api/draft');
     await page.reload();
-    await page.getByTitle('Ask agent', { exact: true }).click();
-    await thread.getByRole('button', { expanded: false }).click();
+    await expandThread(thread);
     await expect(thread.getByRole('button', { name: 'Request change', exact: true })).toBeEnabled();
     await thread.getByRole('button', { name: 'Request change', exact: true }).click();
     await thread.getByLabel('Change request', { exact: true }).fill('Only save once existing comments are loaded.');
     await thread.getByRole('button', { name: 'Save change request', exact: true }).click();
     await expect.poll(async () => (await draft(page)).codeAnnotations).toEqual([
-      expect.objectContaining({ scope: 'general', text: 'Only save once existing comments are loaded.' }),
+      expect.objectContaining({ filePath: 'main.ts', scope: 'line', side: 'new', lineStart: 2, text: 'Only save once existing comments are loaded.' }),
     ]);
     await expect.poll(async () => (await snapshot(page)).threads[0].conversionSaved).toBe(true);
     expect(session.output()).toBe('');
