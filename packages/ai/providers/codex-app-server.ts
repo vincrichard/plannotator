@@ -294,7 +294,7 @@ export function mapApprovalRequest(
 type NotificationListener = (notification: { method: string; params: RpcMessage }) => void;
 type RequestHandler = (method: string, id: string | number, params: RpcMessage) => void;
 
-class CodexAppServerProcess {
+export class CodexAppServerProcess {
   private proc: ChildProcess | null = null;
   private listeners: NotificationListener[] = [];
   private requestHandlers: RequestHandler[] = [];
@@ -314,9 +314,9 @@ class CodexAppServerProcess {
 
   /** Spawn + JSON-RPC initialize handshake, once. `initTimeoutMs` bounds the
    *  initialize wait (model discovery passes a short value so it can't hang). */
-  start(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
+  start(codexPath: string, cwd: string, initTimeoutMs?: number, args: string[] = []): Promise<void> {
     if (!this.startPromise) {
-      this.startPromise = this.doStart(codexPath, cwd, initTimeoutMs).catch((err) => {
+      this.startPromise = this.doStart(codexPath, cwd, initTimeoutMs, args).catch((err) => {
         this.startPromise = null;
         throw err;
       });
@@ -324,12 +324,13 @@ class CodexAppServerProcess {
     return this.startPromise;
   }
 
-  private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
+  private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number, extraArgs: string[] = []): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
     const command =
-      buildWindowsCommandScriptSpawnCommand(commandPath, ["app-server"]) ?? [
+      buildWindowsCommandScriptSpawnCommand(commandPath, ["app-server", ...extraArgs]) ?? [
         commandPath,
         "app-server",
+        ...extraArgs,
       ];
 
     let proc: ChildProcess;
