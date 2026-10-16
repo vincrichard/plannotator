@@ -1,4 +1,5 @@
-import React, { useRef } from 'react';
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
+import React, { useRef, useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { useReviewAnnotationToolbarShortcuts } from '@plannotator/ui/shortcuts';
@@ -10,7 +11,7 @@ interface ExpandedCommentDialogProps {
   isEditing: boolean;
   canSubmit: boolean;
   aiAvailable?: boolean;
-  onAskAI?: (question: string) => void;
+  onAskAI?: (question: string) => void | Promise<boolean | void>;
   onSubmit: () => void;
   onCollapse: () => void;
   onCancel: () => void;
@@ -36,9 +37,12 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   onEditSuggestion,
   hasSuggestedCode = false,
 }) => {
+  const discussions = useReviewDiscussions();
+  const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const dialogRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const askAIEnabled = aiAvailable && !!onAskAI && commentText.trim().length > 0;
+  const [sendingQuestion, setSendingQuestion] = useState(false);
+  const askAIEnabled = !sendingQuestion && aiAvailable && !!onAskAI && commentText.trim().length > 0;
   const submitLabel = isEditing ? 'Update' : 'Add Comment';
 
   useReviewAnnotationToolbarShortcuts({
@@ -63,9 +67,10 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
     },
   });
 
-  const handleAskAI = () => {
+  const handleAskAI = async () => {
     if (!askAIEnabled) return;
-    onAskAI?.(commentText.trim());
+    setSendingQuestion(true);
+    try { await onAskAI?.(commentText.trim()); } finally { setSendingQuestion(false); }
   };
 
   return (
@@ -142,7 +147,7 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
                   title={askAIEnabled ? 'Ask AI this question' : 'Type a question to ask AI'}
                 >
                   <SparklesIcon className="w-3 h-3" />
-                  Ask AI
+                  {askLabel}
                 </button>
               )}
               {onEditSuggestion && (

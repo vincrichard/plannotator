@@ -1,3 +1,4 @@
+import { ReviewDiscussionsProvider, useReviewDiscussionState, mergeDiscussionComments } from './hooks/useReviewDiscussions';
 // Eager renderer registration (side-effect imports, evaluated before every
 // other module below). These keep Plannotator's first paint and identity
 // minting byte-identical now that @plannotator/ui loads KaTeX and the username
@@ -629,6 +630,7 @@ const ReviewApp: React.FC = () => {
   // Echoed on every freshness probe so the server can answer per-client:
   // "your snapshot moved" is independent of whether the VCS changed.
   const [snapshotId, setSnapshotId] = useState<string | undefined>(undefined);
+  const discussions = useReviewDiscussionState(snapshotId);
   const semanticDiffUsable = semanticDiffEnabled && semanticDiffAvailable;
   const callFlowAvailable = callFlowEnabled && callFlowAdvert.available;
   const { state: callFlowAnalysis, retry: retryCallFlowAnalysis } = useCallFlowAnalysis(snapshotId, callFlowAvailable);
@@ -1060,7 +1062,7 @@ const ReviewApp: React.FC = () => {
   );
 
   // Auto-save code annotation drafts
-  const { draftBanner, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget } = useCodeAnnotationDraft({
+  const { initialDraftChecked, draftBanner, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget } = useCodeAnnotationDraft({
     annotations: allAnnotations,
     descriptionAnnotations,
     commentAnnotations,
@@ -1114,14 +1116,14 @@ const ReviewApp: React.FC = () => {
           belongsToCurrentDiff: (a) => annotationMatchesPrScope(a, prMetadata.url, prDiffScope),
         })
       : restored.annotations;
-    if (restoredAnnotations.length > 0) setAnnotations(restoredAnnotations);
+    if (restoredAnnotations.length > 0) setAnnotations(mergeDiscussionComments(restoredAnnotations, annotationsRef.current, discussions.threads));
     if (restored.descriptionAnnotations.length > 0) setDescriptionAnnotations(restored.descriptionAnnotations);
     if (restored.commentAnnotations.length > 0) setCommentAnnotations(restored.commentAnnotations);
     // After a push, a file the reviewer marked Viewed may have changed since.
     const restoredViewed = restorableViewedFiles(restored.viewedFiles, restored.patchChanged, files);
     if (restoredViewed.length > 0) setViewedFiles(new Set(restoredViewed));
     if (restored.autoViewSuppressed.length > 0) setAutoViewSuppressed(new Set(restored.autoViewSuppressed));
-  }, [restoreDraft, reviewHistory, files, prMetadata, prDiffScope, snapshotId]);
+  }, [restoreDraft, reviewHistory, files, prMetadata, prDiffScope, snapshotId, discussions.threads]);
 
   // PR mode (#1590): whenever the diff on screen changes (push picked up,
   // layer/full-stack switch, in-place PR switch back), re-check line comments
@@ -1468,39 +1470,9 @@ const ReviewApp: React.FC = () => {
   // explicit gesture that should surface the provider's real model list.
   const aiSurfaceOpen = reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai';
   useEffect(() => {
-    if (!aiAvailable || !aiSurfaceOpen) return;
+    if (discussions.supported || !aiAvailable || !aiSurfaceOpen) return;
     activateAIProvider(aiConfig.providerId);
-  }, [aiAvailable, aiSurfaceOpen, aiConfig.providerId, activateAIProvider]);
-
-  // File-aware Ask AI: the all-files surface resolves the owning file itself
-  // (its toolbar selection lives in a file the single-file panel may never
-  // have focused), so it must NOT go through activeFileIndex.
-  const handleAskAIForFile = useCallback((filePath: string, question: string, selection?: FileAnnotationSelection) => {
-    const range = selection?.range ?? pendingSelection;
-    if (!range) return;
-    const file = selection?.file ?? files.find(f => f.path === filePath);
-    if (!file) return;
-    const lineStart = Math.min(range.start, range.end);
-    const lineEnd = Math.max(range.start, range.end);
-    const side = range.side === 'additions' ? 'new' : 'old';
-    const selectedCode = extractLinesFromPatch(file.patch, lineStart, lineEnd, side);
-
-    askAI({
-      prompt: question,
-      filePath,
-      lineStart,
-      lineEnd,
-      side,
-      selectedCode: selectedCode || undefined,
-    });
-  }, [askAI, files, pendingSelection]);
-
-  // Single-file surface: the focused file IS files[activeFileIndex].
-  const handleAskAI = useCallback((question: string) => {
-    const file = files[activeFileIndex];
-    if (!file) return;
-    handleAskAIForFile(file.path, question);
-  }, [activeFileIndex, files, handleAskAIForFile]);
+  }, [aiAvailable, aiSurfaceOpen, aiConfig.providerId, activateAIProvider, discussions.supported]);
 
   const handleViewAIResponse = useCallback((questionId?: string) => {
     reviewSidebar.open('ai');
@@ -1511,6 +1483,12 @@ const ReviewApp: React.FC = () => {
   }, []);
 
   const handleScrollToAILines = useCallback((filePath: string, lineStart: number, lineEnd: number, side: 'old' | 'new') => {
+    if (!filePath) return;
+    if (!guideOpen && !files.some(file => file.path === filePath)) {
+      showReferences(null);
+      codeNav.select({ filePath, line: lineStart, side });
+      return;
+    }
     // While the guide takeover is open, the dock is only CSS-hidden — the
     // openDiffFile call would silently switch the hidden dock's file (an
     // unexpected diff on leaving the guide) and reveal nothing on screen.
@@ -1528,7 +1506,7 @@ const ReviewApp: React.FC = () => {
       end: lineEnd,
       side: side === 'new' ? 'additions' : 'deletions',
     });
-  }, [openDiffFile, guideOpen]);
+  }, [openDiffFile, guideOpen, files, showReferences, codeNav.select]);
 
 
   // AI messages overlapping the current selection in a GIVEN file (toolbar
@@ -1885,6 +1863,42 @@ const ReviewApp: React.FC = () => {
     files,
     snapshotId,
   );
+
+  // File-aware Ask AI: the all-files surface resolves the owning file itself
+  // (its toolbar selection lives in a file the single-file panel may never
+  // have focused), so it must NOT go through activeFileIndex.
+  const handleAskAIForFile = useCallback((filePath: string, question: string, selection?: FileAnnotationSelection) => {
+    const range = selection?.range ?? pendingSelection;
+    if (!range) return;
+    const file = selection?.file ?? files.find(f => f.path === filePath);
+    if (!file) return;
+    const lineStart = Math.min(range.start, range.end);
+    const lineEnd = Math.max(range.start, range.end);
+    const side = range.side === 'additions' ? 'new' : 'old';
+    const selectedCode = extractLinesFromPatch(file.patch, lineStart, lineEnd, side);
+
+    if (discussions.supported) {
+      const { id: _id, type: _type, createdAt: _createdAt, ...anchor } = withPRContext({ id: '', type: 'comment', createdAt: 0, filePath, lineStart, lineEnd, side, scope: 'line' }, file);
+      reviewSidebar.open('ai');
+      return discussions.create(anchor, question, selectedCode || undefined);
+    }
+
+    askAI({
+      prompt: question,
+      filePath,
+      lineStart,
+      lineEnd,
+      side,
+      selectedCode: selectedCode || undefined,
+    });
+  }, [askAI, files, pendingSelection, discussions.supported, discussions.create, reviewSidebar.open, withPRContext]);
+
+  // Single-file surface: the focused file IS files[activeFileIndex].
+  const handleAskAI = useCallback((question: string) => {
+    const file = files[activeFileIndex];
+    if (!file) return;
+    return handleAskAIForFile(file.path, question);
+  }, [activeFileIndex, files, handleAskAIForFile]);
 
   // Context rule shared by both auto-open effects below (and mirrored by
   // GuideScreen's matchesContext): a job stamped with a PR url only belongs
@@ -2497,6 +2511,17 @@ const ReviewApp: React.FC = () => {
       afterSelection: selectedAnnotationIdRef.current,
     });
   }, [reviewHistory]);
+
+  const recoveredDiscussions = useRef(new Set<string>());
+  useEffect(() => {
+    if (!initialDraftChecked || draftBanner) return;
+    const recovered = discussions.threads.flatMap(thread => {
+      if (thread.status !== 'converted' || !thread.annotation || thread.conversionSaved || recoveredDiscussions.current.has(thread.id)) return [];
+      recoveredDiscussions.current.add(thread.id);
+      return annotationsRef.current.some(annotation => annotation.id === thread.annotation!.id) ? [] : [thread.annotation];
+    });
+    addCodeAnnotationsWithHistory(recovered);
+  }, [discussions.threads, addCodeAnnotationsWithHistory, initialDraftChecked, draftBanner]);
 
   const handleAddAnnotationForFile = useCallback((
     filePath: string,
@@ -4002,7 +4027,7 @@ const ReviewApp: React.FC = () => {
     snapshotId,
     markdownPreview,
     onAddMarkdownPreviewComment: handleAddMarkdownPreviewComment,
-    onAskAIForMarkdownPreview: aiAvailable ? handleAskAIForMarkdownPreview : undefined,
+    onAskAIForMarkdownPreview: aiAvailable && !discussions.supported ? handleAskAIForMarkdownPreview : undefined,
     // Outdated comments (#1590) carry line numbers from an earlier version of
     // the PR: they stay in the sidebar and the export, never on the diff.
     allAnnotations: diffAnnotations,
@@ -4030,7 +4055,7 @@ const ReviewApp: React.FC = () => {
     onAddDescriptionAnnotation: handleAddDescriptionAnnotation,
     onSelectDescriptionAnnotation: handleSelectDescriptionAnnotation,
     onDeleteDescriptionAnnotation: handleDeleteDescriptionAnnotation,
-    ...buildContextualAIHandlers(aiAvailable, {
+    ...buildContextualAIHandlers(aiAvailable && !discussions.supported, {
       onAskAIForDescription: handleAskAIForDescription,
       onAskAIForComment: handleAskAIForComment,
     }),
@@ -4131,7 +4156,7 @@ const ReviewApp: React.FC = () => {
     handleToggleViewed, reviewShowViewedControls, reviewShowStageControls, stagedFiles, stagingFile, stageFile,
     canStageFiles, isPathStageable, activeWorktreePath, guideRevealFile, handleGuideRevealFile, stageError, isSearchPending, debouncedSearchQuery,
     activeFileSearchMatches, activeSearchMatchId, activeSearchMatch, searchMatches,
-    aiAvailable, aiMessages, aiIsCreatingSession, aiIsStreaming,
+    aiAvailable, aiMessages, aiIsCreatingSession, aiIsStreaming, discussions.supported,
     handleAskAI, handleAskAIForFile, handleViewAIResponse, handleClickAIMarker,
     aiHistoryForSelection, getAIHistoryForFile, agentJobs.jobs, prMetadata, prContext, prArtifacts,
     isPRContextLoading, prContextError, fetchPRContext, platformUser, openDiffFile,
@@ -5005,6 +5030,13 @@ const ReviewApp: React.FC = () => {
   return (
     <ThemeProvider defaultTheme="dark" manageFavicon>
       <TooltipProvider delayDuration={200} skipDelayDuration={100}>
+      <ReviewDiscussionsProvider value={{
+        ...discussions,
+        conversionReady: initialDraftChecked && !draftBanner,
+        conversionUnavailableReason: draftBanner
+          ? 'Restore or dismiss your saved draft before requesting changes.'
+          : 'Wait for saved comments to load. If they could not be loaded, reload before requesting changes.',
+      }}>
       <ReviewStateProvider value={reviewStateValue}>
       <JobLogsProvider value={jobLogsValue}>
       {isSwitchingPRScope && <PRSwitchOverlay />}
@@ -5444,7 +5476,7 @@ const ReviewApp: React.FC = () => {
                 )}
               </button>
             )}
-            {!isCompactTouchLayout && aiAvailable && (
+            {!isCompactTouchLayout && (discussions.supported || aiAvailable) && (
               <button
                 onClick={() => reviewSidebar.toggleTab('ai')}
                 className={`relative p-1.5 rounded-md transition-all ${
@@ -5452,10 +5484,10 @@ const ReviewApp: React.FC = () => {
                     ? 'bg-primary/15 text-primary'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
-                title="AI Chat"
+                title={discussions.supported ? 'Ask agent' : 'AI Chat'}
               >
                 <SparklesIcon className="w-4 h-4" />
-                {aiMessages.length > 0 && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
+                {(discussions.supported ? discussions.threads.some(thread => thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt) : aiMessages.length > 0) && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
                   <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -5495,7 +5527,7 @@ const ReviewApp: React.FC = () => {
                 setGuideOpen(true);
               } : undefined}
               onOpenAnnotations={isCompactTouchLayout ? () => reviewSidebar.open('annotations') : undefined}
-              onOpenAI={isCompactTouchLayout && aiAvailable ? () => reviewSidebar.open('ai') : undefined}
+              onOpenAI={isCompactTouchLayout && (discussions.supported || aiAvailable) ? () => reviewSidebar.open('ai') : undefined}
               onOpenAgents={isCompactTouchLayout && agentJobs.capabilities?.available ? () => reviewSidebar.open('agents') : undefined}
               compactDestination={compactReviewDestination}
               compactActions={compactReviewActions}
@@ -6329,6 +6361,7 @@ const ReviewApp: React.FC = () => {
     />
     </JobLogsProvider>
     </ReviewStateProvider>
+    </ReviewDiscussionsProvider>
     </TooltipProvider>
     </ThemeProvider>
   );

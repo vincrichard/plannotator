@@ -596,3 +596,42 @@ describe('in-place switch onto another draft target (#1590)', () => {
     });
   });
 });
+
+test.skipIf(!hasDom)('automatic discussion recovery waits for the initial draft and its restore decision', async () => {
+  let finishLoad!: (value: { data: unknown; generation: number }) => void;
+  const saves: unknown[] = [];
+  setDraftTransport({
+    load: () => new Promise(resolve => { finishLoad = resolve; }),
+    save: async data => { saves.push(data); },
+    remove: async () => {},
+  });
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const root = createRoot(host);
+  let result!: HookResult;
+  let restore!: () => void;
+  const converted = { ...ANNOTATION, id: 'discussion-converted' };
+  function RecoveryHost() {
+    const [annotations, setAnnotations] = React.useState<CodeAnnotation[]>([]);
+    result = useCodeAnnotationDraft(options({ annotations }));
+    React.useEffect(() => {
+      if (result.initialDraftChecked && !result.draftBanner) setAnnotations(previous => previous.some(annotation => annotation.id === converted.id) ? previous : [...previous, converted]);
+    }, [result.initialDraftChecked, result.draftBanner]);
+    restore = () => setAnnotations(result.restoreDraft().annotations);
+    return null;
+  }
+  try {
+    await act(async () => root.render(<RecoveryHost />));
+    await tick(DEBOUNCE_WAIT_MS);
+    expect(result.initialDraftChecked).toBe(false);
+    expect(saves).toHaveLength(0);
+    await act(async () => finishLoad({ data: { codeAnnotations: [ANNOTATION], ts: Date.now() }, generation: 0 }));
+    await tick(DEBOUNCE_WAIT_MS);
+    expect(result.draftBanner?.count).toBe(1);
+    expect(saves).toHaveLength(0);
+    await act(async () => restore());
+    await tick(DEBOUNCE_WAIT_MS);
+    expect((saves.at(-1) as { codeAnnotations: CodeAnnotation[] }).codeAnnotations.map(annotation => annotation.id)).toEqual([ANNOTATION.id, converted.id]);
+  } finally {
+    await act(async () => root.unmount()); host.remove(); resetDraftTransport();
+  }
+});

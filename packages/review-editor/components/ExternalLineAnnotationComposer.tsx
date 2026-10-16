@@ -72,7 +72,7 @@ export function ExternalLineAnnotationComposer({
   }, [file.path, onAddAnnotationForFile]);
 
   const askAI = useCallback((question: string) => {
-    onAskAIForFile(file.path, question);
+    return onAskAIForFile(file.path, question);
   }, [file.path, onAskAIForFile]);
 
   return (

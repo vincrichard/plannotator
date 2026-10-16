@@ -1,3 +1,4 @@
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useState } from 'react';
 import { formatLineRange } from '../utils/formatLineRange';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
@@ -7,7 +8,7 @@ import { submitHint } from '@plannotator/ui/utils/platform';
 interface AskAIInputProps {
   lineStart: number;
   lineEnd: number;
-  onSubmit: (question: string) => void;
+  onSubmit: (question: string) => void | Promise<boolean | void>;
   onCancel: () => void;
   isLoading: boolean;
   /** Pre-filled text from the comment textarea */
@@ -33,11 +34,13 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
   onSwitchToComment,
   dragHandleProps,
 }) => {
+  const discussions = useReviewDiscussions();
+  const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const [question, setQuestion] = useState(initialText);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!question.trim() || isLoading) return;
-    onSubmit(question.trim());
+    if (await onSubmit(question.trim()) === false) return;
     setQuestion('');
   };
 
@@ -46,7 +49,7 @@ export const AskAIInput: React.FC<AskAIInputProps> = ({
       <div className="flex items-center justify-between mb-2" {...dragHandleProps}>
         <span className="text-xs text-muted-foreground flex items-center gap-1.5">
           <SparklesIcon className="w-3 h-3 text-primary" />
-          Ask AI · {formatLineRange(lineStart, lineEnd)}
+          {askLabel} · {formatLineRange(lineStart, lineEnd)}
         </span>
         <button
           onClick={onCancel}

@@ -1,3 +1,4 @@
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ToolbarState } from '../hooks/useAnnotationToolbar';
@@ -42,7 +43,7 @@ interface AnnotationToolbarProps {
   enabledLabels?: LabelDef[];
   // AI props
   aiAvailable?: boolean;
-  onAskAI?: (question: string) => void;
+  onAskAI?: (question: string) => void | Promise<boolean | void>;
   isAILoading?: boolean;
   onViewAIResponse?: (questionId?: string) => void;
   /** AI messages that overlap the current line selection */
@@ -123,6 +124,8 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   onViewAIResponse,
   aiHistoryMessages = [],
 }) => {
+  const discussions = useReviewDiscussions();
+  const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const coarsePointer = hasPrimaryCoarsePointer();
   const visibleBounds = useVisibleViewportBounds(coarsePointer ? 16 : 0);
   const toolbarWidth = Math.min(TOOLBAR_MAX_WIDTH, visibleBounds.width);
@@ -160,20 +163,21 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
     resetDrag();
   }, [toolbarState.range.start, toolbarState.range.end, toolbarState.range.side, resetDrag]);
 
-  const handleAskAIClick = () => {
-    // If user already typed text in the comment box, send it directly as an AI question
-    if (commentText.trim()) {
-      onAskAI?.(commentText.trim());
+  const [sendingQuestion, setSendingQuestion] = useState(false);
+  const handleAskAISubmit = async (question: string) => {
+    setSendingQuestion(true);
+    try {
+      const sent = await onAskAI?.(question);
+      if (sent === false) return false;
       setCommentText('');
-      setAskAIMode(true); // Switch to AI mode to show history/preview
-    } else {
-      setAskAIMode(true);
-    }
+      if (discussions?.supported) onCancel();
+      else setAskAIMode(true);
+      return true;
+    } finally { setSendingQuestion(false); }
   };
-
-  const handleAskAISubmit = (question: string) => {
-    onAskAI?.(question);
-    // Stay in AI mode so the history updates
+  const handleAskAIClick = () => {
+    if (commentText.trim()) void handleAskAISubmit(commentText.trim());
+    else setAskAIMode(true);
   };
 
   const handleAskAIClose = () => {
@@ -221,7 +225,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
           lineEnd={toolbarState.range.end}
           onSubmit={handleAskAISubmit}
           onCancel={handleAskAIClose}
-          isLoading={isAILoading}
+          isLoading={isAILoading || sendingQuestion}
           aiHistory={aiHistoryMessages}
           onViewResponse={onViewAIResponse}
           onSwitchToComment={() => setAskAIMode(false)}
@@ -358,7 +362,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
                 title={commentText.trim() ? 'Ask AI this question' : 'Switch to AI mode'}
               >
                 <SparklesIcon className="w-3 h-3" />
-                Ask AI
+                {askLabel}
                 {aiHistoryMessages.length > 0 && (
                   <span className="text-[9px] font-mono bg-muted px-1 py-0.5 rounded">
                     {aiHistoryMessages.length}

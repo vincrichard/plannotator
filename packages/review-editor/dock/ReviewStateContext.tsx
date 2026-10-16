@@ -219,11 +219,11 @@ export interface ReviewState {
   // AI
   aiAvailable: boolean;
   aiMessages: AIChatEntry[];
-  onAskAI: (question: string) => void;
+  onAskAI: (question: string) => void | Promise<boolean | void>;
   /** File-aware Ask AI for the all-files surface. onAskAI above resolves the
    *  file from the single-file panel's focus index, which is wrong when the
    *  selection lives in the all-files CodeView. */
-  onAskAIForFile: (filePath: string, question: string, selection?: FileAnnotationSelection) => void;
+  onAskAIForFile: (filePath: string, question: string, selection?: FileAnnotationSelection) => void | Promise<boolean | void>;
   isAILoading: boolean;
   onViewAIResponse: (questionId?: string) => void;
   onClickAIMarker: (questionId: string) => void;

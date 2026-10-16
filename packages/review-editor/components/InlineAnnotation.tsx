@@ -1,4 +1,6 @@
 import React from 'react';
+import { discussionIdFromMarker, useReviewDiscussions } from '../hooks/useReviewDiscussions';
+import { ReviewDiscussionThread } from './ReviewDiscussionThread';
 import { SEVERITY_STYLES, DiffAnnotationMetadata } from '@plannotator/ui/types';
 import { SuggestionBlock } from './SuggestionBlock';
 import { CommentMeta } from './CommentMeta';
@@ -23,6 +25,12 @@ export const InlineAnnotation: React.FC<InlineAnnotationProps> = ({
   onEdit,
   onDelete,
 }) => {
+  const discussions = useReviewDiscussions();
+  const threadId = discussionIdFromMarker(metadata.annotationId);
+  if (threadId) {
+    const thread = discussions?.threads.find(candidate => candidate.id === threadId);
+    return thread ? <ReviewDiscussionThread thread={thread} /> : null;
+  }
   const severity = metadata.severity ? SEVERITY_STYLES[metadata.severity] : null;
 
   return (

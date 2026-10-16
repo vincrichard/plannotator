@@ -1,3 +1,4 @@
+import { useDiscussionAnnotations, useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DEFAULT_CODE_VIEW_FILE_METRICS, getSingularPatch, processFile } from '@pierre/diffs';
@@ -360,7 +361,7 @@ export interface AllFilesCodeViewProps {
   // index-based onAskAI/aiHistoryForSelection (which resolve the file from the
   // single-file panel's focus) must not be used here.
   aiAvailable?: boolean;
-  onAskAIForFile?: (filePath: string, question: string) => void;
+  onAskAIForFile?: (filePath: string, question: string) => void | Promise<boolean | void>;
   isAILoading?: boolean;
   onViewAIResponse?: (questionId?: string) => void;
   /** Line-scoped questions rendered as inline sparkle markers. */
@@ -632,7 +633,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   expandUnchanged,
   fontFamily,
   fontSize,
-  annotations,
+  annotations: reviewAnnotations,
   selectedAnnotationId,
   scrollTargetAnnotation,
   pendingSelection,
@@ -716,6 +717,8 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   // theme pair in step with the UI theme.
   const workerPoolReady = useIsWorkerPoolReadyOrDisabled();
   useWorkerPoolThemeSync(pierreTheme.syntaxTheme);
+  const annotations = useDiscussionAnnotations(reviewAnnotations);
+  const discussions = useReviewDiscussions();
   const viewerRef = useRef<CodeViewHandle<DiffAnnotationMetadata> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // State mirror of the scroll container so the leading-content portal can
@@ -1065,7 +1068,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (!onAskAIForFile) return undefined;
     return (question: string) => {
       const filePath = activeFilePathRef.current;
-      if (filePath) onAskAIForFile(filePath, question);
+      if (filePath) return onAskAIForFile(filePath, question);
     };
   }, [onAskAIForFile]);
 
@@ -3100,9 +3103,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         onLineSelection={onLineSelection}
         onAddAnnotation={handleAddAnnotation}
         onEditAnnotation={onEditAnnotation}
-        aiAvailable={aiAvailable}
+        aiAvailable={discussions?.supported ? discussions.available : aiAvailable}
         onAskAI={handleAskAIForActiveFile}
-        isAILoading={isAILoading}
+        isAILoading={discussions?.supported ? false : isAILoading}
         onViewAIResponse={onViewAIResponse}
         aiHistoryMessages={aiHistoryForActiveFile}
       />

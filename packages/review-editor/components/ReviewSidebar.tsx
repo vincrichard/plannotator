@@ -1,3 +1,5 @@
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
+import { ReviewDiscussionsTab } from './ReviewDiscussionThread';
 import React, { useRef, useState } from 'react';
 import { CodeAnnotation, type CodeAnnotationScope, type EditorAnnotation, type Annotation, type CommentAnnotation } from '@plannotator/ui/types';
 import { Button } from '@plannotator/ui/components/ui/button';
@@ -294,6 +296,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
   guideLaunchable,
   canOpenGuideJob,
 }) => {
+  const discussions = useReviewDiscussions();
   const totalCount = annotations.length + (editorAnnotations?.length ?? 0) + (descriptionAnnotations?.length ?? 0) + (commentAnnotations?.length ?? 0);
   const [copied, setCopied] = useState(false);
   // General-comment composer state lives HERE, not in GeneralCommentComposer:
@@ -600,7 +603,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
         >
           <div className="flex items-center gap-2 w-full min-w-0">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground truncate">
-              {activeTab === 'annotations' ? 'Annotations' : activeTab === 'ai' ? 'AI' : 'Review Agents'}
+              {activeTab === 'annotations' ? 'Annotations' : activeTab === 'ai' ? (discussions?.supported ? 'Discussions' : 'AI') : 'Review Agents'}
             </h2>
             {activeTab === 'annotations' && totalCount > 0 && (
               <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
@@ -791,7 +794,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
           )}
 
           {/* AI tab */}
-          {activeTab === 'ai' && (
+          {activeTab === 'ai' && (discussions?.supported ? <ReviewDiscussionsTab onNavigate={onScrollToAILines} /> : (
             <AITab
               messages={aiMessages}
               isCreatingSession={isAICreatingSession}
@@ -811,7 +814,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
               askSessionSetupHint={askSessionSetupHint}
              
             />
-          )}
+          ))}
 
           {/* Agents tab */}
           {activeTab === 'agents' && (

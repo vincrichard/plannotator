@@ -101,6 +101,8 @@ export interface CodeDraftTargetState {
 }
 
 interface UseCodeAnnotationDraftResult {
+  /** True after the initial draft was read successfully; automatic additions must wait. */
+  initialDraftChecked: boolean;
   draftBanner: { count: number; viewedCount: number; timeAgo: string } | null;
   /** `patchChanged` is true when the server served the draft for a patch other
    *  than the one it was saved on (the host re-checks line anchors). */
@@ -129,6 +131,7 @@ export function useCodeAnnotationDraft({
   targetLoadTimeoutMs = TARGET_LOAD_TIMEOUT_MS,
   persistViewedFiles = true,
 }: UseCodeAnnotationDraftOptions): UseCodeAnnotationDraftResult {
+  const [initialDraftChecked, setInitialDraftChecked] = useState(false);
   const [draftBanner, setDraftBanner] = useState<{ count: number; viewedCount: number; timeAgo: string } | null>(null);
   const draftDataRef = useRef<DraftData | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -211,6 +214,7 @@ export function useCodeAnnotationDraft({
           });
         }
         hasMountedRef.current = true;
+        setInitialDraftChecked(true);
       })
       .catch(() => {
         hasMountedRef.current = true;
@@ -412,5 +416,5 @@ export function useCodeAnnotationDraft({
     read();
   }, [isApiMode]);
 
-  return { draftBanner, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget };
+  return { initialDraftChecked, draftBanner, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget };
 }

@@ -1,3 +1,4 @@
+import { useDiscussionAnnotations, useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useMemo, useRef, useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import { FileDiff, type DiffLineAnnotation } from '@pierre/diffs/react';
 import { getSingularPatch, processFile } from '@pierre/diffs';
@@ -240,7 +241,7 @@ interface DiffViewerProps {
   activeSearchMatch?: ReviewSearchMatch | null;
   // AI props
   aiAvailable?: boolean;
-  onAskAI?: (question: string) => void;
+  onAskAI?: (question: string) => void | Promise<boolean | void>;
   isAILoading?: boolean;
   onViewAIResponse?: (questionId?: string) => void;
   aiMessages?: AIChatEntry[];
@@ -310,7 +311,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   expandUnchanged,
   fontFamily,
   fontSize,
-  annotations,
+  annotations: reviewAnnotations,
   selectedAnnotationId,
   scrollTargetAnnotation,
   pendingSelection,
@@ -359,6 +360,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   // theme. (No mount gating here — the single-file panel renders one diff;
   // a main-thread fallback frame at startup is invisible.)
   useWorkerPoolThemeSync(pierreTheme.syntaxTheme);
+  const annotations = useDiscussionAnnotations(reviewAnnotations, filePath);
+  const discussions = useReviewDiscussions();
   // containerRef must point at the actual scrolling element (the
   // OverlayScrollbars viewport), not the OverlayScrollArea host. `viewport`
   // is state so effects re-run once the library has mounted the viewport.
@@ -1115,9 +1118,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onLineSelection={onLineSelection}
                 onAddAnnotation={onAddAnnotation}
                 onEditAnnotation={onEditAnnotation}
-                aiAvailable={aiAvailable}
+                aiAvailable={discussions?.supported ? discussions.available : aiAvailable}
                 onAskAI={onAskAI}
-                isAILoading={isAILoading}
+                isAILoading={discussions?.supported ? false : isAILoading}
                 onViewAIResponse={onViewAIResponse}
                 aiHistoryMessages={aiHistoryMessages}
               />

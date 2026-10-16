@@ -15,7 +15,10 @@ import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buil
 import { createRequestHostGuard } from "./request-host-guard";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, getVcsFileBytesForDiff, getVcsDiffFingerprint, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, detectRemoteDefaultCompareTarget, resolveAvailableDiffType, vcsOwnsDiffType, vcsSupportsSnapshot, materializeVcsSnapshot, gitRuntime } from "./vcs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { createReviewDiscussions } from "@plannotator/shared/review-discussions";
+import { createDiscussionAgent, discoverDiscussionParent } from "./review-discussion-agent";
 import { existsSync } from "node:fs";
 import { SingleFlight } from "@plannotator/shared/single-flight";
 import {
@@ -1986,6 +1989,7 @@ export async function startReviewServer(
   }>((resolve) => {
     resolveDecision = (result) => {
       reviewDecided = true;
+      discussions.dispose();
       const target = result.target ?? activeReviewTarget();
       resolve(target ? { ...result, target } : result);
     };
@@ -2018,6 +2022,22 @@ export async function startReviewServer(
     },
   };
 
+  const discussionParent = discoverDiscussionParent(process.env, resolveAgentCwd());
+  const discussions = createReviewDiscussions({
+    file: join(getPlannotatorDataDir(), 'review-discussions', `${serverSession}.json`),
+    serverSession,
+    provider: discussionParent?.provider,
+    supported: !isRemote && !options.tailnetPublished && !isStaticPatchMode && !isPRMode
+      && (!!discussionParent || origin === 'codex' || origin === 'claude-code'),
+    getSnapshotId: currentSnapshotId,
+    unavailableReason: !aiEnabled ? 'AI is disabled for this review.'
+      : isRemote || options.tailnetPublished ? 'Discussion forks require a local review session.'
+      : isStaticPatchMode || isPRMode ? 'Discussion forks currently support local repository reviews.'
+      : !discussionParent ? 'Launch this review from a Codex or Claude session to ask its fork.' : undefined,
+    getContext: () => ({ snapshotId: currentSnapshotId(), patch: currentPatch, description: buildCurrentAiReviewContext() ?? `Repository: ${resolveAgentCwd()}\nReview mode: ${currentDiffType}\nBase: ${currentBase}`, cwd: resolveAgentCwd() }),
+    isDecided: () => reviewDecided,
+    createAgent: ({ cwd, ...agentOptions }) => createDiscussionAgent({ ...discussionParent!, cwd }, agentOptions),
+  });
   const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
     Bun.serve({
@@ -3899,12 +3919,17 @@ export async function startReviewServer(
             return Response.json(result.body, { status: result.status });
           }
 
+          const discussionResponse = await discussions.handle(req);
+          if (discussionResponse) return discussionResponse;
+
           // API: Annotation draft persistence
           if (url.pathname === "/api/draft") {
             if (req.method === "POST") {
               try {
                 const keys = currentDraftKeys();
-                const saved = reviewDrafts.save(keys, await req.json());
+                const draftBody = await req.json();
+                const saved = reviewDrafts.save(keys, draftBody);
+                if (saved) discussions.acknowledgeConversions(draftBody);
                 // PR mode reports a rejected (stale-generation) save instead of
                 // swallowing it; local reviews keep the historical always-ok.
                 if (!saved && keys.targetKey) {
@@ -4243,12 +4268,13 @@ export async function startReviewServer(
   boundPort = port;
   serverUrl = buildAdvertisedUrl(port);
   agentApiUrl = `http://127.0.0.1:${port}`;
-  const exitHandler = () => agentJobs.killAll();
+  const exitHandler = () => { agentJobs.killAll(); discussions.dispose(); };
   process.once("exit", exitHandler);
 
   const stop = () => {
     process.removeListener("exit", exitHandler);
     agentJobs.killAll();
+    discussions.dispose();
     callFlowService.cancelAll();
     aiRuntime?.dispose();
     server.stop();

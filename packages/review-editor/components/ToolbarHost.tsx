@@ -1,3 +1,4 @@
+import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo } from 'react';
 import type {
   CodeAnnotation,
@@ -48,7 +49,7 @@ interface ToolbarHostProps {
   ) => void;
   // AI props (optional — DiffViewer and external source-selection bridges wire these)
   aiAvailable?: boolean;
-  onAskAI?: (question: string) => void;
+  onAskAI?: (question: string) => void | Promise<boolean | void>;
   isAILoading?: boolean;
   onViewAIResponse?: (questionId?: string) => void;
   aiHistoryMessages?: AIChatEntry[];
@@ -74,6 +75,7 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
   },
   ref,
 ) {
+  const discussions = useReviewDiscussions();
   const toolbar = useAnnotationToolbar({
     patch,
     filePath,
@@ -132,13 +134,14 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
     toolbar.setSuggestedCode,
     toolbar.suggestedCode,
   ]);
-  const handleExpandedAskAI = useCallback((question: string) => {
+  const handleExpandedAskAI = useCallback(async (question: string) => {
     if (!onAskAI) return;
-    onAskAI(question);
+    if (await onAskAI(question) === false) return false;
     toolbar.setCommentText('');
+    if (discussions?.supported) toolbar.handleCancel();
     toolbar.setAskAIMode(true);
     toolbar.setShowCommentModal(false);
-  }, [onAskAI, toolbar.setAskAIMode, toolbar.setCommentText, toolbar.setShowCommentModal]);
+  }, [onAskAI, toolbar.setAskAIMode, toolbar.setCommentText, toolbar.setShowCommentModal, discussions?.supported, toolbar.handleCancel]);
 
   const expandedCommentTitle = useMemo(() => {
     const toolbarState = toolbar.toolbarState;
@@ -177,9 +180,9 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
           decorations={toolbar.decorations}
           onDecorationsChange={toolbar.setDecorations}
           enabledLabels={enabledLabels}
-          aiAvailable={aiAvailable}
+          aiAvailable={discussions?.supported ? discussions.available : aiAvailable}
           onAskAI={onAskAI}
-          isAILoading={isAILoading}
+          isAILoading={discussions?.supported ? false : isAILoading}
           onViewAIResponse={onViewAIResponse}
           aiHistoryMessages={aiHistoryMessages}
         />
@@ -192,7 +195,7 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
           setCommentText={toolbar.setCommentText}
           isEditing={!!toolbar.editingAnnotationId}
           canSubmit={canSubmitAnnotation}
-          aiAvailable={aiAvailable && !toolbar.editingAnnotationId}
+          aiAvailable={(discussions?.supported ? discussions.available : aiAvailable) && !toolbar.editingAnnotationId}
           onAskAI={handleExpandedAskAI}
           onSubmit={toolbar.handleSubmitAnnotation}
           onCollapse={handleCollapseCommentModal}

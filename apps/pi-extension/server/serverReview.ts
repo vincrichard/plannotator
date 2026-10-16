@@ -3867,6 +3867,9 @@ export async function startReviewServer(options: {
 				body, platformViewed: isPRMode ? initialViewedFiles : [],
 			});
 			json(res, result.body, result.status);
+		} else if (url.pathname === "/api/review-discussions" || url.pathname.startsWith("/api/review-discussions/")) {
+			// Headless discussion forks currently target the standalone Codex/Claude CLI.
+			json(res, { supported: false, available: false, threads: [], version: 0, snapshotId: "", reason: "Discussion forks are not supported by the Pi server." }, req.method === "GET" ? 200 : 501);
 		} else if (url.pathname === "/api/draft") {
 			await handleReviewDraftRequest(req, res, currentDraftKeys(), reviewDrafts);
 		} else if (url.pathname === "/favicon.png") {
