@@ -112,6 +112,8 @@ export function useCodeNav(snapshotId?: string) {
     target: current?.target ?? null,
     isLoading: pendingSymbol !== null,
     activeSymbol: pendingSymbol ?? current?.symbol ?? null,
+    isAtSource: history.index === 0,
+    backReturnsToSource: history.index === 1,
     canGoBack: history.index > 0,
     canGoForward: history.index < history.entries.length - 1,
     resolve, select, go, clear,

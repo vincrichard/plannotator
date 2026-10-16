@@ -34,9 +34,11 @@ describe.if(typeof document !== 'undefined')('reference navigation history', () 
     await act(async () => nav.select({ filePath: 'other.ts', line: 40, side: 'new' }));
     await act(async () => nav.go(-1));
     expect(nav.target?.filePath).toBe('helper.ts');
+    expect(nav.backReturnsToSource).toBe(true);
     await act(async () => nav.go(-1));
     expect(nav.target).toEqual({ filePath: 'main.ts', line: 7, side: 'old' });
     expect(nav.canGoBack).toBe(false);
+    expect(nav.isAtSource).toBe(true);
     await act(async () => nav.go(1));
     expect(nav.target?.line).toBe(10);
     expect(nav.result).toEqual(result);

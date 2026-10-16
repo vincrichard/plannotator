@@ -22,6 +22,7 @@ import type {
   DiffAnnotationMetadata,
   TokenAnnotationMeta,
 } from '@plannotator/ui/types';
+import { decorateMethodContext } from '../utils/methodContext';
 import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { usePierreTheme } from '../hooks/usePierreTheme';
 import { useIsWorkerPoolReadyOrDisabled, useWorkerPoolThemeSync } from '../workerPool';
@@ -1766,6 +1767,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       // CodeView recycles elements across items.
       nodeToItemIdRef.current.set(node, context.id);
       augmentItem(context.id);
+      decorateMethodContext(node, _instance);
       const itemId = context.id;
       requestAnimationFrame(() => applyItemHighlights(node, itemId));
     },

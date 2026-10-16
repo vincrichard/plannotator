@@ -1360,6 +1360,33 @@ const ReviewApp: React.FC = () => {
 
   const closeTokenHover = tokenHover.close;
 
+  const referenceOrigin = useRef<{ panelId: string; width?: number } | null>(null);
+  const showReferences = useCallback((symbol: string | null) => {
+    if (!dockApi) return;
+    const existing = dockApi.getPanel(REVIEW_CODE_NAV_PANEL_ID);
+    if (existing) {
+      existing.api.updateParameters({ annotationId: undefined });
+      existing.api.setTitle(symbol ? `References: ${symbol}` : 'References');
+      existing.api.setActive();
+    } else {
+      const refPanel = isCallFlowActive
+        ? REVIEW_CALL_FLOW_PANEL_ID
+        : isSemanticDiffActive
+        ? REVIEW_SEMANTIC_DIFF_PANEL_ID
+        : isAllFilesActive
+        ? REVIEW_ALL_FILES_PANEL_ID
+        : REVIEW_DIFF_PANEL_ID;
+      dockApi.addPanel({
+        id: REVIEW_CODE_NAV_PANEL_ID,
+        component: REVIEW_PANEL_TYPES.CODE_NAV,
+        title: symbol ? `References: ${symbol}` : 'References',
+        // Give the reference room for review while keeping the source beside it.
+        position: { direction: 'right', referencePanel: dockApi.getPanel(referenceOrigin.current?.panelId ?? '')?.id ?? refPanel },
+        initialWidth: referenceOrigin.current?.width ?? Math.round(dockApi.width * 0.7),
+      });
+    }
+  }, [dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive]);
+
   const handleCodeNavRequest = useCallback((request: CodeNavRequest) => {
     // Opening References is a deliberate action; a hover is an idle gesture,
     // and the two must never be on screen together. This covers EVERY route
@@ -1376,31 +1403,12 @@ const ReviewApp: React.FC = () => {
       });
       return;
     }
-    codeNav.resolve(request);
-    if (!dockApi) return;
-    const existing = dockApi.getPanel(REVIEW_CODE_NAV_PANEL_ID);
-    if (existing) {
-      existing.api.updateParameters({ annotationId: undefined });
-      existing.api.setTitle(`References: ${request.symbol}`);
-      existing.api.setActive();
-    } else {
-      const refPanel = isCallFlowActive
-        ? REVIEW_CALL_FLOW_PANEL_ID
-        : isSemanticDiffActive
-        ? REVIEW_SEMANTIC_DIFF_PANEL_ID
-        : isAllFilesActive
-        ? REVIEW_ALL_FILES_PANEL_ID
-        : REVIEW_DIFF_PANEL_ID;
-      dockApi.addPanel({
-        id: REVIEW_CODE_NAV_PANEL_ID,
-        component: REVIEW_PANEL_TYPES.CODE_NAV,
-        title: `References: ${request.symbol}`,
-        // Give the reference room for review while keeping the source beside it.
-        position: { direction: 'right', referencePanel: refPanel },
-        initialWidth: Math.round(dockApi.width * 0.7),
-      });
+    if (!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID) && dockApi?.activePanel) {
+      referenceOrigin.current = { panelId: dockApi.activePanel.id };
     }
-  }, [closeTokenHover, codeNav.resolve, dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive, gitContext, agentCwd]);
+    codeNav.resolve(request);
+    showReferences(request.symbol);
+  }, [closeTokenHover, codeNav.resolve, dockApi, showReferences, gitContext, agentCwd]);
 
   // Which capabilities request has settled, keyed by its input: on the render
   // where aiUIEnabled changes the key no longer matches, so nothing reads a
@@ -2195,11 +2203,18 @@ const ReviewApp: React.FC = () => {
 
   const canNavigateReferences = (event: KeyboardEvent) => !event.defaultPrevented && !event.repeat
     && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
-    && !guideOpen && !!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
+    && !guideOpen && (!!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)
+      || (codeNav.isAtSource && codeNav.canGoForward && !!referenceOrigin.current));
   const navigateReferences = (direction: -1 | 1) => {
     closeTokenHover();
-    dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)?.api.updateParameters({ annotationId: undefined });
-    dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)?.api.setActive();
+    const panel = dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
+    if (direction === -1 && (codeNav.backReturnsToSource || codeNav.isAtSource)) {
+      if (panel && referenceOrigin.current) referenceOrigin.current.width = panel.api.width;
+      panel?.api.close();
+      dockApi?.getPanel(referenceOrigin.current?.panelId ?? '')?.api.setActive();
+    } else {
+      showReferences(codeNav.activeSymbol);
+    }
     codeNav.go(direction);
   };
 
@@ -2207,7 +2222,7 @@ const ReviewApp: React.FC = () => {
     handlers: {
       referenceBack: {
         when: (event) => canNavigateReferences(event),
-        handle: () => { if (codeNav.canGoBack) navigateReferences(-1); },
+        handle: () => { if (codeNav.canGoBack || codeNav.isAtSource) navigateReferences(-1); },
       },
       referenceForward: {
         when: (event) => canNavigateReferences(event),

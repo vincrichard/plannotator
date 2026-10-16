@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60, addedReference = false) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -29,8 +29,13 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
   const distant = "import { widget } from './helper';\nexport const setting = 1;\n" +
     Array.from({ length: contextLines }, (_, i) => contextLines > 60 && i === 499 ? 'export const middle = widget(6);\n' : `// context ${i}\n`).join('') + 'export const distant = widget(4);\n' + (contextLines > 60 ? Array.from({ length: 400 }, (_, i) => `// tail ${i}\n`).join('') : '');
   writeFileSync(join(repo, 'c-distant.ts'), distant);
+  const methodSource = '# before method\n'.repeat(20) + 'class Runner:\n    @staticmethod\n    def run(value):\n'
+    + Array.from({ length: 240 }, (_, i) => `        v${i} = ${i}\n`).join('')
+    + '        return value\n' + '# unrelated tail\n'.repeat(80);
+  if (methods) writeFileSync(join(repo, 'methods.py'), methodSource);
   git('add', '.');
   git('commit', '-m', 'base');
+  if (methods) writeFileSync(join(repo, 'methods.py'), methodSource.replace('v30 = 30', 'v30 = 300\n        added = 1').replace('v190 = 190', 'v190 = 1900'));
   writeFileSync(join(repo, 'c-distant.ts'), distant.replace('setting = 1', 'setting = 2').replace('widget(4)', contextLines > 60 ? 'widget(5)' : 'widget(4)'));
   writeFileSync(join(repo, 'a-main.ts'), "import { widget } from './helper';\nexport const main = widget(10);\n");
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const next = widget(2);\nexport const extra = widget(3);\n");
@@ -455,5 +460,78 @@ test('reference history restores nested lookups and preserves a manually resized
     await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
     await selectLine(page, side, 2, 'unified');
     await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('preserve navigation draft');
+  } finally { await session.close(); }
+});
+
+
+test('back past the first reference closes its pane; forward restores width and pending comments', async ({ page }) => {
+  const session = await review(page);
+  try {
+    await openReferences(page);
+    const side = page.locator('[data-reference-file]');
+    const group = page.locator('.dv-groupview').filter({ has: side });
+    const before = (await group.boundingBox())!;
+    await page.mouse.move(before.x - 2, before.y + before.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(before.x + 140, before.y + before.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const width = (await group.boundingBox())!.width;
+    await selectLine(page, side, 2, 'unified');
+    await page.getByPlaceholder('Leave feedback...').fill('draft across history close');
+    await page.keyboard.press('Escape');
+    await page.getByLabel('Symbol locations').getByRole('heading', { name: 'Definitions', exact: true }).click();
+    await page.keyboard.press('Control+-');
+    await expect(side).toHaveCount(0);
+    await expect(page.locator('.dv-active-group .dv-tab').filter({ hasText: 'All files' })).toBeVisible();
+    await page.keyboard.press('Control+Shift+-');
+    await expect(side).toHaveAttribute('data-reference-file', 'helper.ts');
+    await expect.poll(async () => Math.abs((await group.boundingBox())!.width - width)).toBeLessThan(3);
+    await selectLine(page, side, 2, 'unified');
+    await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('draft across history close');
+  } finally { await session.close(); }
+});
+
+
+test('one method control expands all its hunks in all-files and single-file views', async ({ page }) => {
+  const session = await review(page, false, 60, false, true);
+  try {
+    // Bring the last file into the virtualized all-files window without changing the selected tab.
+    const methodHeader = page.getByText('methods.py', { exact: true }).last();
+    await methodHeader.scrollIntoViewIfNeeded();
+    const viewer = page.locator('diffs-container').filter({ has: page.locator('[data-expand-method="Runner.run"]') });
+    await expect(viewer).toHaveCount(1);
+    await expect(viewer.locator('[data-expand-method]')).toHaveCount(1);
+    await expect(viewer.locator('[data-expand-method]')).toHaveText('Expand Runner.run (244 lines)');
+    await expect(viewer.locator('[data-additions] [data-line="23"]')).toHaveCount(0);
+    await expect(viewer.locator('[data-expand-method]')).toBeVisible();
+    await page.screenshot({ path: join(proofDir, 'method-context.png') });
+    // Keep the whole expanded method in the virtualized window for line assertions.
+    await page.setViewportSize({ width: 1600, height: 9000 });
+    await viewer.locator('[data-expand-method]').click();
+    // The signature, a previously hidden middle line and final body line are now present.
+    await expect(page.locator('diffs-container [data-additions] [data-line="23"]').filter({ hasText: 'def run' })).toHaveCount(1);
+    await expect(page.locator('diffs-container [data-additions] [data-line="150"]').filter({ hasText: 'v125' })).toHaveCount(1);
+    await expect(page.locator('diffs-container [data-additions] [data-line="265"]').filter({ hasText: 'return value' })).toHaveCount(1);
+    // The normal remaining-context controls still work and unrelated tail stays collapsed.
+    await expect(page.locator('diffs-container [data-additions] [data-line="330"]')).toHaveCount(0);
+    const expandedViewer = page.locator('diffs-container').filter({ has: page.locator('[data-additions] [data-line="265"]') });
+    await selectLine(page, expandedViewer, 149, 'deletions');
+    await comment(page, 'old method context');
+    await page.getByRole('button', { name: /M methods.py/ }).click();
+    await expect(page.locator('.dv-tab').filter({ hasText: 'methods.py' })).toBeVisible();
+    const single = page.locator('.dv-active-group diffs-container');
+    await expect(single.locator('[data-expand-method]')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Unified', exact: true }).click();
+    await expect(single.locator('[data-expand-method]')).toHaveCount(1);
+    await single.locator('[data-expand-method]').click();
+    await expect(single.locator('[data-unified] [data-line="23"]')).toContainText('def run');
+    await expect(single.locator('[data-unified] [data-line="150"]')).toContainText('v125');
+    await expect(single.locator('[data-unified] [data-line="265"]')).toContainText('return value');
+    await selectLine(page, single, 150, 'unified');
+    await comment(page, 'expanded method context');
+    await expect.poll(() => annotations(page)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ filePath: 'methods.py', lineStart: 149, lineEnd: 149, side: 'old', text: 'old method context' }),
+      expect.objectContaining({ filePath: 'methods.py', lineStart: 150, lineEnd: 150, side: 'new', text: 'expanded method context' }),
+    ]));
   } finally { await session.close(); }
 });

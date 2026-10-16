@@ -33,6 +33,7 @@ import type { AnnotationScrollTarget } from '../types';
 import { getLineNumberFromNode, getSideFromNode, getDiffSelection } from '../utils/diffSelection';
 import { isContentConsistentWithPatch } from '../utils/patchConsistency';
 import { hashString } from '../utils/hashString';
+import { decorateMethodContext } from '../utils/methodContext';
 import { markdownPreviewSourcePath, markdownViewsFor, resolveMarkdownView, type MarkdownFileView } from '../utils/markdownPreview';
 import { InlineAnnotation } from './InlineAnnotation';
 import { InlineAIMarker } from './InlineAIMarker';
@@ -115,6 +116,9 @@ const PierreDiffContent = React.memo(({
         disableBackground,
         expandUnchanged,
         hunkSeparators: 'line-info',
+        onPostRender: (node, instance, phase) => {
+          if (phase !== 'unmount') decorateMethodContext(node, instance);
+        },
         enableLineSelection: true,
         enableGutterUtility: true,
         onGutterUtilityClick,
