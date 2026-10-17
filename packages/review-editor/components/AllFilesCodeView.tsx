@@ -3103,6 +3103,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         onLineSelection={onLineSelection}
         onAddAnnotation={handleAddAnnotation}
         onEditAnnotation={onEditAnnotation}
+        onDeleteAnnotation={onDeleteAnnotation}
         aiAvailable={discussions?.supported ? discussions.available : aiAvailable}
         onAskAI={handleAskAIForActiveFile}
         isAILoading={discussions?.supported ? false : isAILoading}

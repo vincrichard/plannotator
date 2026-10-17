@@ -16,6 +16,7 @@ interface ExpandedCommentDialogProps {
   onSubmit: () => void;
   onCollapse: () => void;
   onCancel: () => void;
+  onDelete?: () => void;
   autoFocus?: boolean;
   collapsible?: boolean;
   onEditSuggestion?: () => void;
@@ -33,6 +34,7 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   onSubmit,
   onCollapse,
   onCancel,
+  onDelete,
   autoFocus = true,
   collapsible = true,
   onEditSuggestion,
@@ -141,6 +143,11 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
 
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-border/50">
             <div className="flex flex-wrap items-center gap-3">
+              {isEditing && onDelete && (
+                <button type="button" onClick={onDelete} className="review-toolbar-btn text-destructive">
+                  Delete annotation
+                </button>
+              )}
               {aiAvailable && (
                 <button
                   type="button"
@@ -164,6 +171,11 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
               )}
             </div>
             <div className="flex items-center gap-2">
+              {isEditing && (
+                <button type="button" onClick={onCancel} className="review-toolbar-btn">
+                  Cancel
+                </button>
+              )}
               {collapsible && (
                 <button
                   type="button"

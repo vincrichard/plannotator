@@ -14,7 +14,7 @@ interface CommentActionsProps {
 const ACTION_BTN = 'p-1 rounded text-muted-foreground transition-colors';
 
 /**
- * The single hover-revealed action row shared by every comment card (inline
+ * The action row shared by every comment card (inline
  * diff, sidebar, file banner). Bottom-aligned, right-justified, order
  * left→right: edit · copy · delete (so the close/delete sits furthest right).
  * The parent card must carry the Tailwind `group` class for the hover reveal.
@@ -23,7 +23,7 @@ export const CommentActions: React.FC<CommentActionsProps> = ({ onEdit, copyText
   if (!onEdit && !copyText && !onDelete) return null;
   return (
   <div
-    className="flex items-center justify-end gap-1 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
+    className="review-comment-actions flex items-center justify-end gap-1 mt-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
     onClick={(e) => e.stopPropagation()}
   >
     {onEdit && (

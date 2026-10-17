@@ -36,6 +36,18 @@
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 6px 16px rgb(0 0 0 / 0.07);
 }
 
+/* Touch has no reliable hover; actions must be visible before the first tap. */
+@media (hover: none), (pointer: coarse) {
+  .review-comment-actions { opacity: 1; }
+  .review-comment-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}
+
 /* Selected state — shared by inline annotations and file-comment cards. A
    primary-colored border + 1px ring mirrors the sidebar's selected row so the
    clicked card and its highlighted diff lines read as one selection. */
@@ -55,7 +67,8 @@
   color: var(--muted-foreground);
 }
 
-.review-comment > .review-comment-body {
+/* Discussion messages are nested inside the card, unlike ordinary comments. */
+.review-comment .review-comment-body {
   min-width: 0;
   color: var(--foreground);
   line-height: 1.5;
@@ -66,7 +79,7 @@
 
 /* Block markdown in the file-comment banner: cancel the pre-wrap used for the
    inline-markdown body so rendered paragraphs/lists don't gain blank lines. */
-.review-comment > .review-comment-body.ai-markdown {
+.review-comment .review-comment-body.ai-markdown {
   white-space: normal;
 }
 

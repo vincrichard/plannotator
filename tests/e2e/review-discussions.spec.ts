@@ -9,7 +9,7 @@ const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? '.local/plannotator
 const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/discussions');
 const parentId = '11111111-1111-4111-8111-111111111111';
 
-async function review(page: Page) {
+async function review(page: Page, answerText?: string) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussions-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -55,7 +55,7 @@ createInterface({input:process.stdin}).on('line', line => {
     const timer = setInterval(() => {
       if (!existsSync(join(root, 'release'))) return;
       clearInterval(timer);
-      const text = params.input[0].text.includes('Explain further') ? 'Completed follow-up answer.' : 'Completed answer for this discussion.';
+      const text = ${answerText === undefined ? "params.input[0].text.includes('Explain further') ? 'Completed follow-up answer.' : 'Completed answer for this discussion.'" : JSON.stringify(answerText)};
       send({method:'item/completed',params:{threadId:thread,turnId:turn,item:{type:'agentMessage',phase:'final_answer',text}}});
       send({method:'turn/completed',params:{threadId:thread,turn:{id:turn,status:'completed'}}});
     }, 25);
@@ -103,7 +103,7 @@ createInterface({input:process.stdin}).on('line', line => {
 
 async function selectLine(page: Page, viewer: Locator, line: number, side: 'additions' | 'deletions' | 'unified') {
   const column = viewer.locator(`[data-${side}]`);
-  await column.locator(`[data-line="${line}"]`).click();
+  await column.locator(`[data-line="${line}"]`).last().click();
   await column.locator(`[data-column-number="${line}"]`).last().click();
   if (!await page.getByPlaceholder('Leave feedback...').isVisible()) {
     await column.locator(`[data-column-number="${line}"]`).last().hover();
@@ -342,3 +342,78 @@ for (const failure of ['ended', 'disconnected'] as const) {
     } finally { await session.close(); }
   });
 }
+
+for (const width of [390, 1440]) {
+  test.describe(`discussion layout at ${width}px`, () => {
+    test.use({ viewport: { width, height: 900 }, hasTouch: width === 390 });
+    test('long questions and answers fit the review pane while code scrolls locally', async ({ page }, testInfo) => {
+      const prose = 'Explain how this change affects the remaining references. '.repeat(24);
+      const token = 'very_long_identifier_'.repeat(40);
+      const question = `${prose}\n\n${token}\n\n\`${token}\``;
+      const answer = `${prose}\n\n[Detailed explanation ${token}](https://example.invalid)\n\n\`\`\`ts\nconst result = "${token}";\n\`\`\``;
+      const session = await review(page, answer);
+      try {
+        const main = page.locator('diffs-container').first();
+        await selectLine(page, main, 2, width === 390 ? 'unified' : 'additions');
+        await page.getByPlaceholder('Leave feedback...').fill(question);
+        await page.getByRole('button', { name: 'Ask agent', exact: true }).click();
+        const thread = main.locator('[data-discussion-id]');
+        await expect(thread.getByLabel('Follow-up question', { exact: true })).toBeVisible();
+        const fits = () => thread.evaluate(el => ({
+          overflow: el.scrollWidth - el.clientWidth,
+          width: el.getBoundingClientRect().width,
+          viewport: window.innerWidth,
+        }));
+        await expect.poll(async () => (await fits()).overflow).toBeLessThanOrEqual(1);
+        expect((await fits()).width).toBeLessThan(width);
+        session.release();
+        await expect(thread).toContainText('Answered');
+        await expect(thread.locator('.inline-code-block')).toBeVisible();
+        await expect.poll(async () => (await fits()).overflow).toBeLessThanOrEqual(1);
+        const code = thread.locator('.inline-code-block');
+        expect(await code.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+        await code.evaluate(el => { el.scrollLeft = 80; });
+        expect(await code.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+        await thread.getByLabel('Follow-up question', { exact: true }).fill('Keep this unsent follow-up.');
+        await page.setViewportSize({ width: width === 390 ? 600 : 1000, height: 900 });
+        await expect.poll(async () => (await fits()).overflow).toBeLessThanOrEqual(1);
+        await expect(thread.getByLabel('Follow-up question', { exact: true })).toHaveValue('Keep this unsent follow-up.');
+        await page.screenshot({ path: join(proofDir, `discussion-wrap-${width}-${testInfo.project.name}.png`) });
+      } finally { await session.close(); }
+    });
+  });
+}
+
+test.describe('touch annotation actions', () => {
+  test.use({ viewport: { width: 390, height: 900 }, hasTouch: true });
+  test('comments can be edited, cancelled and deleted with visible touch controls', async ({ page }) => {
+    const session = await review(page);
+    try {
+      const main = page.locator('diffs-container').first();
+      await selectLine(page, main, 2, 'unified');
+      await page.getByPlaceholder('Leave feedback...').fill('Original comment');
+      await page.getByRole('button', { name: 'Add Comment', exact: true }).tap();
+      const card = main.locator('[data-annotation-id]');
+      await expect(card).toContainText('Original comment');
+      const edit = card.getByTitle('Edit', { exact: true });
+      // A transparent action is still technically clickable; assert it can be seen without hover.
+      expect(await edit.evaluate(el => getComputedStyle(el.parentElement!).opacity)).toBe('1');
+      const size = await edit.boundingBox();
+      expect(size!.width).toBeGreaterThanOrEqual(44);
+      expect(size!.height).toBeGreaterThanOrEqual(44);
+      await edit.tap();
+      await page.getByPlaceholder('Leave feedback...').fill('Discard this edit');
+      await page.getByRole('button', { name: 'Cancel', exact: true }).tap();
+      await expect(card).toContainText('Original comment');
+      await edit.tap();
+      await page.getByPlaceholder('Leave feedback...').fill('Updated comment');
+      await page.getByRole('button', { name: 'Update', exact: true }).tap();
+      await expect.poll(async () => (await draft(page)).codeAnnotations?.[0]?.text).toBe('Updated comment');
+      await edit.tap();
+      await page.getByRole('button', { name: 'Delete annotation', exact: true }).tap();
+      await expect(card).toHaveCount(0);
+      await expect(page.getByPlaceholder('Leave feedback...')).toHaveCount(0);
+      await expect.poll(async () => (await draft(page)).codeAnnotations ?? []).toEqual([]);
+    } finally { await session.close(); }
+  });
+});

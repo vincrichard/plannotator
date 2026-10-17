@@ -47,6 +47,7 @@ interface ToolbarHostProps {
     conventionalLabel?: ConventionalLabel | null,
     decorations?: ConventionalDecoration[],
   ) => void;
+  onDeleteAnnotation?: (id: string) => void;
   // AI props (optional — DiffViewer and external source-selection bridges wire these)
   aiAvailable?: boolean;
   onAskAI?: (question: string) => void | Promise<boolean | void>;
@@ -67,6 +68,7 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
     onLineSelection,
     onAddAnnotation,
     onEditAnnotation,
+    onDeleteAnnotation,
     aiAvailable,
     onAskAI,
     isAILoading,
@@ -200,6 +202,10 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
           onSubmit={toolbar.handleSubmitAnnotation}
           onCollapse={handleCollapseCommentModal}
           onCancel={handleCancelCommentModal}
+          onDelete={onDeleteAnnotation && toolbar.editingAnnotationId ? () => {
+            onDeleteAnnotation(toolbar.editingAnnotationId!);
+            toolbar.handleCancel();
+          } : undefined}
           autoFocus={!toolbar.expandedComposerRequired}
           collapsible={!toolbar.expandedComposerRequired}
           onEditSuggestion={toolbar.expandedComposerRequired ? handleEditSuggestion : undefined}

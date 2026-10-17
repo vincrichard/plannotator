@@ -1118,6 +1118,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onLineSelection={onLineSelection}
                 onAddAnnotation={onAddAnnotation}
                 onEditAnnotation={onEditAnnotation}
+                onDeleteAnnotation={onDeleteAnnotation}
                 aiAvailable={discussions?.supported ? discussions.available : aiAvailable}
                 onAskAI={onAskAI}
                 isAILoading={discussions?.supported ? false : isAILoading}
