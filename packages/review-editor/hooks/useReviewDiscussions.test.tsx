@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ReviewDiscussionsProvider, useReviewDiscussionState, mergeDiscussionComments } from './useReviewDiscussions';
+import { ReviewDiscussionsProvider, useReviewDiscussionState, useDiscussionCommentRecovery, mergeDiscussionComments } from './useReviewDiscussions';
+import type { CodeAnnotation } from '@plannotator/ui/types';
 import { QuestionBadge } from '../components/FileRowBits';
 import { adoptServerSession, __resetServerSessionForTests } from '@plannotator/ui/utils/serverSession';
-import type { ReviewDiscussion } from '../../core/review-discussions';
+import type { ReviewDiscussion, ReviewDiscussionComment } from '../../core/review-discussions';
 let root: Root | undefined;
 let host: HTMLElement | undefined;
 let originalFetch: typeof fetch;
@@ -29,6 +30,34 @@ afterEach(async () => {
   __resetServerSessionForTests();
 });
 describe.if(typeof document !== 'undefined')('review discussions', () => {
+  test('conversion recovery waits for draft resolution, preserves edits and does not resurrect deleted comments', async () => {
+    const annotation: ReviewDiscussionComment = { ...anchor, id: 'discussion-one', type: 'comment', text: 'Change it', createdAt: 1 };
+    const thread: ReviewDiscussion = { id: 'one', snapshotId: 'snapshot-one', anchor, messages: [], status: 'converted', createdAt: 1, updatedAt: 2, annotation };
+    const edited = { ...annotation, id: 'discussion-edited', text: 'Reviewer edited this request' };
+    const annotations: { current: CodeAnnotation[] } = { current: [edited] };
+    const threads: ReviewDiscussion[] = [thread,
+      { ...thread, id: 'edited', annotation: { ...edited, text: 'Older request' } },
+      { ...thread, id: 'saved', conversionSaved: true, annotation: { ...annotation, id: 'already-saved' } },
+    ];
+    const addAnnotations = (recovered: CodeAnnotation[]) => { annotations.current = [...annotations.current, ...recovered]; };
+    function Recovery({ ready, threads }: { ready: boolean; threads: ReviewDiscussion[] }) {
+      useDiscussionCommentRecovery({ ready, threads, annotations, addAnnotations });
+      return null;
+    }
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<Recovery ready={false} threads={threads} />));
+    expect(annotations.current).toEqual([edited]);
+    await act(async () => root!.render(<Recovery ready threads={threads} />));
+    expect(annotations.current).toEqual([edited, annotation]);
+    await act(async () => root!.render(<Recovery ready threads={structuredClone(threads)} />));
+    expect(annotations.current).toEqual([edited, annotation]);
+    annotations.current = [];
+    await act(async () => root!.render(<Recovery ready threads={structuredClone(threads)} />));
+    expect(annotations.current).toEqual([]);
+  });
+
   test('keeps questions separate, binds inline markers to their snapshot and original side, persists drafts', async () => {
     const thread: ReviewDiscussion = { id: 'one', snapshotId: 'snapshot-one', anchor, messages: [{ id: 'q', role: 'user', text: 'Why?', createdAt: 1 }], status: 'answered', createdAt: 1, updatedAt: 2 };
     await render(async () => Response.json({ supported: true, available: true, threads: [thread, { ...thread, id: 'other-snapshot', snapshotId: 'snapshot-two' }, { ...thread, id: 'converted', status: 'converted' }, { ...thread, id: 'resolved', status: 'resolved' }] }));

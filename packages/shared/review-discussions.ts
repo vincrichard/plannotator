@@ -4,7 +4,7 @@ import type { ReviewDiscussion, ReviewDiscussionAnchor, ReviewDiscussionsSnapsho
 import { validateAnnotationPatch } from './external-annotation';
 import { callFlowInstallOriginAllowed } from './call-flow-install';
 
-interface DiscussionAgent {
+export interface DiscussionAgent {
   answer(prompt: string, signal: AbortSignal): Promise<{ sessionId: string; text: string }>;
   dispose(): void;
 }

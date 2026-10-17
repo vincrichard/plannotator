@@ -1,3 +1,5 @@
+import type { DiscussionAgent } from '@plannotator/shared/review-discussions';
+export type { DiscussionAgent } from '@plannotator/shared/review-discussions';
 import { spawn } from 'node:child_process';
 import { CodexAppServerProcess, type RpcMessage } from '../ai/providers/codex-app-server';
 import { guardChildStreams, writeChildLine } from '../ai/providers/child-io';
@@ -28,11 +30,6 @@ export function discoverDiscussionParent(env: NodeJS.ProcessEnv = process.env, c
   }
   return (provider === 'codex' || provider === 'claude') && sessionId && UUID.test(sessionId)
     ? { provider, sessionId, cwd } : null;
-}
-
-export interface DiscussionAgent {
-  answer(prompt: string, signal: AbortSignal): Promise<{ sessionId: string; text: string }>;
-  dispose(): void;
 }
 
 export interface DiscussionAgentOptions {

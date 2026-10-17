@@ -1,4 +1,3 @@
-import { ReviewDiscussionsProvider, useReviewDiscussionState, mergeDiscussionComments } from './hooks/useReviewDiscussions';
 // Eager renderer registration (side-effect imports, evaluated before every
 // other module below). These keep Plannotator's first paint and identity
 // minting byte-identical now that @plannotator/ui loads KaTeX and the username
@@ -92,7 +91,8 @@ import type { SuggestionHunk } from './edit/deriveSuggestions';
 import type { EditSelectionComment } from './edit/useEditSession';
 import { useAIChat } from './hooks/useAIChat';
 import { toast, Toaster } from 'sonner';
-import { useCodeNav, type CodeNavRequest } from './hooks/useCodeNav';
+import { useReferencePanel } from './hooks/useReferencePanel';
+import { ReviewDiscussionsProvider, useReviewDiscussionState, useDiscussionCommentRecovery, mergeDiscussionComments } from './hooks/useReviewDiscussions';
 import { useTokenHover } from './hooks/useTokenHover';
 import { TokenHoverCard } from './components/TokenHoverCard';
 import { buildTokenHoverRequest } from './utils/buildCodeNavRequest';
@@ -114,7 +114,6 @@ import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotat
 import { AGENT_CLOSED_TITLE, agentClosedSubtitle } from '@plannotator/ui/utils/agentClosed';
 import { useUndoHistory } from '@plannotator/ui/hooks/useUndoHistory';
 import { useHistoryShortcuts } from '@plannotator/ui/shortcuts';
-import { useReviewEditorShortcuts } from './shortcuts';
 import {
   applyCollectionMutations,
   hasActiveHistoryOverlay,
@@ -1326,7 +1325,6 @@ const ReviewApp: React.FC = () => {
     sessionId: aiSessionId,
   } = aiChat;
 
-  const codeNav = useCodeNav(snapshotId);
   // The other half of the held-modifier gesture. The diff views paint
   // `pn-token-nav` from the pointer ENTER event, which covers "hold the key,
   // then move onto a symbol" but neither half of the gesture modifier mode
@@ -1363,55 +1361,16 @@ const ReviewApp: React.FC = () => {
 
   const closeTokenHover = tokenHover.close;
 
-  const referenceOrigin = useRef<{ panelId: string; width?: number } | null>(null);
-  const showReferences = useCallback((symbol: string | null) => {
-    if (!dockApi) return;
-    const existing = dockApi.getPanel(REVIEW_CODE_NAV_PANEL_ID);
-    if (existing) {
-      existing.api.updateParameters({ annotationId: undefined });
-      existing.api.setTitle(symbol ? `References: ${symbol}` : 'References');
-      existing.api.setActive();
-    } else {
-      const refPanel = isCallFlowActive
-        ? REVIEW_CALL_FLOW_PANEL_ID
-        : isSemanticDiffActive
-        ? REVIEW_SEMANTIC_DIFF_PANEL_ID
-        : isAllFilesActive
-        ? REVIEW_ALL_FILES_PANEL_ID
-        : REVIEW_DIFF_PANEL_ID;
-      dockApi.addPanel({
-        id: REVIEW_CODE_NAV_PANEL_ID,
-        component: REVIEW_PANEL_TYPES.CODE_NAV,
-        title: symbol ? `References: ${symbol}` : 'References',
-        // Give the reference room for review while keeping the source beside it.
-        position: { direction: 'right', referencePanel: dockApi.getPanel(referenceOrigin.current?.panelId ?? '')?.id ?? refPanel },
-        initialWidth: referenceOrigin.current?.width ?? Math.round(dockApi.width * 0.7),
-      });
-    }
-  }, [dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive]);
-
-  const handleCodeNavRequest = useCallback((request: CodeNavRequest) => {
-    // Opening References is a deliberate action; a hover is an idle gesture,
-    // and the two must never be on screen together. This covers EVERY route
-    // in: Cmd+click, Ctrl+click, the Alt+click alias, and the card's own
-    // location links. It also settles the overlap #1461 shipped with, where a
-    // Cmd+click landed on a token whose hover card was open or mid-dwell and
-    // both surfaces appeared. close() cancels the pending dwell too, so a
-    // click during the dwell never resolves into a card behind the panel.
-    closeTokenHover();
-    if (!gitContext && !agentCwd) {
-      toast('Code navigation requires a local checkout', {
-        description: 'Re-run with --local for PR reviews',
-        duration: 4000,
-      });
-      return;
-    }
-    if (!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID) && dockApi?.activePanel) {
-      referenceOrigin.current = { panelId: dockApi.activePanel.id };
-    }
-    codeNav.resolve(request);
-    showReferences(request.symbol);
-  }, [closeTokenHover, codeNav.resolve, dockApi, showReferences, gitContext, agentCwd]);
+  const { codeNav, showReferences, handleCodeNavRequest } = useReferencePanel({
+    dockApi,
+    snapshotId,
+    localCheckoutAvailable: !!(gitContext || agentCwd),
+    closeTokenHover,
+    guideOpen,
+    sourcePanelId: isCallFlowActive ? REVIEW_CALL_FLOW_PANEL_ID
+      : isSemanticDiffActive ? REVIEW_SEMANTIC_DIFF_PANEL_ID
+      : isAllFilesActive ? REVIEW_ALL_FILES_PANEL_ID : REVIEW_DIFF_PANEL_ID,
+  });
 
   // Which capabilities request has settled, keyed by its input: on the render
   // where aiUIEnabled changes the key no longer matches, so nothing reads a
@@ -2215,42 +2174,6 @@ const ReviewApp: React.FC = () => {
     else openAllFilesPanel();
   }, [dockApi, files, isCompactTouchLayout, openAllFilesPanel, openPROverviewPanel, prMetadata]);
 
-  const canNavigateReferences = (event: KeyboardEvent) => !event.defaultPrevented && !event.repeat
-    && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
-    && !guideOpen && (!!dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID)
-      || (codeNav.isAtSource && codeNav.canGoForward && !!referenceOrigin.current));
-  const navigateReferences = (direction: -1 | 1) => {
-    closeTokenHover();
-    const panel = dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
-    if (direction === -1 && (codeNav.backReturnsToSource || codeNav.isAtSource)) {
-      if (panel && referenceOrigin.current) referenceOrigin.current.width = panel.api.width;
-      panel?.api.close();
-      dockApi?.getPanel(referenceOrigin.current?.panelId ?? '')?.api.setActive();
-    } else {
-      showReferences(codeNav.activeSymbol);
-    }
-    codeNav.go(direction);
-  };
-
-  useReviewEditorShortcuts({
-    handlers: {
-      referenceBack: {
-        when: (event) => canNavigateReferences(event),
-        handle: () => { if (codeNav.canGoBack || codeNav.isAtSource) navigateReferences(-1); },
-      },
-      referenceForward: {
-        when: (event) => canNavigateReferences(event),
-        handle: () => { if (codeNav.canGoForward) navigateReferences(1); },
-      },
-      closeTab: {
-        when: (event) => !event.defaultPrevented && !event.repeat
-          && !isNativeHistoryOwner(event) && !hasActiveHistoryOverlay(document)
-          && !guideOpen && !!dockApi?.activePanel,
-        handle: () => dockApi?.activePanel?.api.close(),
-      },
-    },
-  });
-
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -2512,16 +2435,12 @@ const ReviewApp: React.FC = () => {
     });
   }, [reviewHistory]);
 
-  const recoveredDiscussions = useRef(new Set<string>());
-  useEffect(() => {
-    if (!initialDraftChecked || draftBanner) return;
-    const recovered = discussions.threads.flatMap(thread => {
-      if (thread.status !== 'converted' || !thread.annotation || thread.conversionSaved || recoveredDiscussions.current.has(thread.id)) return [];
-      recoveredDiscussions.current.add(thread.id);
-      return annotationsRef.current.some(annotation => annotation.id === thread.annotation!.id) ? [] : [thread.annotation];
-    });
-    addCodeAnnotationsWithHistory(recovered);
-  }, [discussions.threads, addCodeAnnotationsWithHistory, initialDraftChecked, draftBanner]);
+  useDiscussionCommentRecovery({
+    threads: discussions.threads,
+    annotations: annotationsRef,
+    ready: initialDraftChecked && !draftBanner,
+    addAnnotations: addCodeAnnotationsWithHistory,
+  });
 
   const handleAddAnnotationForFile = useCallback((
     filePath: string,
@@ -3920,19 +3839,7 @@ const ReviewApp: React.FC = () => {
     const referencePanel = dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
     if (dockApi && annotation.filePath && (!files.some(file => file.path === annotation.filePath) ||
       referencePanel?.api.getParameters().filePath === annotation.filePath)) {
-      if (referencePanel) {
-        referencePanel.api.updateParameters({ annotationId: id });
-        referencePanel.api.setActive();
-      } else {
-        dockApi.addPanel({
-          id: REVIEW_CODE_NAV_PANEL_ID,
-          component: REVIEW_PANEL_TYPES.CODE_NAV,
-          title: 'References',
-          params: { annotationId: id },
-          position: { direction: 'right' },
-          initialWidth: Math.round(dockApi.width * 0.7),
-        });
-      }
+      showReferences(null, id);
       setSelectedAnnotationId(id);
       setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
       return;
@@ -3953,7 +3860,7 @@ const ReviewApp: React.FC = () => {
     }
     setSelectedAnnotationId(id);
     setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
-  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel, dockApi]);
+  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel, dockApi, showReferences]);
 
   // Diff context bundled into local-mode feedback headers so the receiving
   // agent knows which diff the annotations are anchored to. Uses committedBase

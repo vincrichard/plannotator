@@ -1,31 +1,32 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReviewDiscussion, ReviewDiscussionAnchor } from '../../core/review-discussions';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import type { ReviewDiscussion, ReviewDiscussionAnchor, ReviewDiscussionsSnapshot } from '../../core/review-discussions';
 import { withServerSession, noteServerSessionMismatch, currentServerSession } from '@plannotator/ui/utils/serverSession';
 import type { CodeAnnotation } from '@plannotator/ui/types';
 
-interface Snapshot {
-  supported?: boolean;
-  available: boolean;
-  reason?: string;
-  provider?: 'codex' | 'claude';
+interface CreateQuestion {
+  id: string;
   snapshotId?: string;
-  threads: ReviewDiscussion[];
-  version?: number;
+  anchor: ReviewDiscussionAnchor;
+  text: string;
+  codeContext?: string;
 }
-interface CreateQuestion { id: string; snapshotId?: string; anchor: ReviewDiscussionAnchor; text: string; codeContext?: string }
 const disconnectedMessage = 'Cannot reach this review. Unsent questions are kept in this tab. Check the connection or download saved questions before reopening.';
 const endedMessage = 'This review has ended. Your question was not sent. Keep this tab open to copy unsent text, or download saved questions before starting another review.';
 const markerPrefix = 'discussion-marker-';
 export function discussionIdFromMarker(id: string) { return id.startsWith(markerPrefix) ? id.slice(markerPrefix.length) : null; }
 
 export function useReviewDiscussionState(snapshotId?: string) {
-  const [state, setState] = useState<Snapshot>({ available: false, threads: [] });
+  const [state, setState] = useState<ReviewDiscussionsSnapshot>({ supported: false, available: false, snapshotId: snapshotId ?? '', version: 0, threads: [] });
   const [error, setError] = useState<string>();
   const storageKey = `review-discussion-drafts:${location.pathname}:${currentServerSession() ?? 'loading'}`;
   const [disconnected, setDisconnected] = useState(false);
   const [ended, setEnded] = useState(false);
   const endedRef = useRef(false);
-  const markEnded = useCallback(() => { endedRef.current = true; setEnded(true); setError(endedMessage); }, []);
+  const markEnded = useCallback(() => {
+    endedRef.current = true;
+    setEnded(true);
+    setError(endedMessage);
+  }, []);
   const [failedQuestions, setFailedQuestions] = useState<Record<string, CreateQuestion>>(() => {
     try { return JSON.parse(sessionStorage.getItem(storageKey + ':pending') ?? '{}'); } catch { return {}; }
   });
@@ -57,7 +58,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
     if (response.status === 404) return;
     if (!response.ok) { if (mounted.current) setDisconnected(true); throw new Error(disconnectedMessage); }
     if (mounted.current) setDisconnected(false);
-    const next: Snapshot = await response.json();
+    const next: ReviewDiscussionsSnapshot = await response.json();
     if (mounted.current && before === revision.current) setState(previous => (next.version ?? 0) < (previous.version ?? 0) || JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
   }, [markEnded]);
   useEffect(() => {
@@ -91,13 +92,28 @@ export function useReviewDiscussionState(snapshotId?: string) {
       previous.snapshotId === snapshotId && previous.text === text && previous.codeContext === codeContext
       && JSON.stringify(previous.anchor) === JSON.stringify(anchor)) ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext };
     saveFailedQuestions(previous => ({ ...previous, [question.id]: question }));
-    try { await request('', 'POST', question); setThreadExpanded(question.id, true); saveFailedQuestions(previous => { const next = { ...previous }; delete next[question.id]; return next; }); return true; }
-    catch (cause) { saveFailedQuestions(previous => ({ ...previous, [question.id]: question })); setError(cause instanceof Error ? cause.message : String(cause)); return false; }
+    try {
+      await request('', 'POST', question);
+      setThreadExpanded(question.id, true);
+      saveFailedQuestions(previous => {
+        const next = { ...previous };
+        delete next[question.id];
+        return next;
+      });
+      return true;
+    } catch (cause) {
+      saveFailedQuestions(previous => ({ ...previous, [question.id]: question }));
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    }
   }, [snapshotId, request, setThreadExpanded, failedQuestions, saveFailedQuestions]);
   const pendingMessages = useRef(new Map<string, { id: string; text: string }>());
   const send = useCallback(async (id: string, text: string) => {
     let message = pendingMessages.current.get(id);
-    if (!message || message.text !== text) { message = { id: crypto.randomUUID(), text }; pendingMessages.current.set(id, message); }
+    if (!message || message.text !== text) {
+      message = { id: crypto.randomUUID(), text };
+      pendingMessages.current.set(id, message);
+    }
     await request(`/${encodeURIComponent(id)}/messages`, 'POST', message);
     pendingMessages.current.delete(id);
   }, [request]);
@@ -133,4 +149,24 @@ export function mergeDiscussionComments(restored: CodeAnnotation[], current: Cod
   const retained = current.filter(annotation => converted.has(annotation.id));
   const ids = new Set(retained.map(annotation => annotation.id));
   return [...restored.filter(annotation => !ids.has(annotation.id)), ...retained];
+}
+
+/** Recover converted comments only after the reviewer settles the saved draft. */
+export function useDiscussionCommentRecovery({ threads, annotations, ready, addAnnotations }: {
+  threads: ReviewDiscussion[];
+  annotations: RefObject<CodeAnnotation[]>;
+  ready: boolean;
+  addAnnotations(annotations: CodeAnnotation[]): void;
+}) {
+  const recoveredIds = useRef(new Set<string>());
+  useEffect(() => {
+    if (!ready) return;
+    const recovered = threads.flatMap(thread => {
+      const { annotation } = thread;
+      if (thread.status !== 'converted' || !annotation || thread.conversionSaved || recoveredIds.current.has(thread.id)) return [];
+      recoveredIds.current.add(thread.id);
+      return annotations.current.some(existing => existing.id === annotation.id) ? [] : [annotation];
+    });
+    addAnnotations(recovered);
+  }, [threads, annotations, ready, addAnnotations]);
 }
