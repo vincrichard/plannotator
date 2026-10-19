@@ -9,7 +9,7 @@ const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? '.local/plannotator
 const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/discussions');
 const parentId = '11111111-1111-4111-8111-111111111111';
 
-async function review(page: Page, answerText?: string) {
+async function review(page: Page, answerText?: string, longFile: boolean | 'deleted' = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussions-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -21,11 +21,14 @@ async function review(page: Page, answerText?: string) {
   git('init', '-b', 'main');
   git('config', 'user.name', 'Discussion test');
   git('config', 'user.email', 'discussion@example.invalid');
-  writeFileSync(join(repo, 'main.ts'), "import { widget } from './helper';\nexport const result = widget(1);\n");
+  const contents = (value: number) => longFile
+    ? Array.from({ length: 160 }, (_, i) => `export const value${i + 1} = ${value};`).join('\n') + '\n'
+    : `import { widget } from './helper';\nexport const result = widget(${value});\n`;
+  writeFileSync(join(repo, 'main.ts'), contents(1));
   writeFileSync(join(repo, 'helper.ts'), 'export function widget(value: number) {\n  return value * 2;\n}\n');
   git('add', '.');
   git('commit', '-m', 'base');
-  writeFileSync(join(repo, 'main.ts'), "import { widget } from './helper';\nexport const result = widget(2);\n");
+  writeFileSync(join(repo, 'main.ts'), longFile === 'deleted' ? '' : contents(2));
   // The gate makes reviewing while answers are pending deterministic. Commentary/deltas must never become discussion messages.
   writeFileSync(join(root, 'bin', 'codex'), `#!${process.execPath}
 const { createInterface } = require('node:readline');
@@ -450,4 +453,51 @@ test('guided review forks the launching session and keeps normal guide persisten
     // Completed guides reopen automatically when the jobs snapshot arrives.
     await expect(page.getByText('Adjust widget input').first()).toBeVisible();
   } finally { await session.close(); }
+});
+
+test.describe('last-line touch comments', () => {
+  test.use({ viewport: { width: 390, height: 700 }, hasTouch: true });
+  for (const surface of ['all-files', 'file']) for (const side of ['old', 'new']) test(`the plus at the bottom opens a composer (${surface}, ${side})`, async ({ page, browserName }, testInfo) => {
+    const session = await review(page, undefined, side === 'old' ? 'deleted' : true);
+    try {
+      if (surface === 'file') {
+        const row = page.getByRole('button', { name: /^Mark as viewed M main.ts/ });
+        if (!await row.isVisible()) await page.getByRole('button', { name: 'Open review navigation', exact: true }).tap();
+        await row.tap();
+      }
+      const viewer = page.locator('diffs-container').first();
+      await viewer.evaluate(el => {
+        let viewport = el.parentElement;
+        while (viewport && !(viewport.scrollHeight > viewport.clientHeight && /auto|scroll/.test(getComputedStyle(viewport).overflowY))) viewport = viewport.parentElement;
+        if (!viewport) throw new Error('Missing diff scroller');
+        viewport.scrollTop = viewport.scrollHeight;
+      });
+      const lines = page.locator('diffs-container [data-line="160"]');
+      const line = side === 'new' ? lines.last() : lines.first();
+      await expect(line).toBeVisible();
+      const numbers = page.locator('diffs-container [data-column-number="160"]');
+      const number = side === 'new' ? numbers.last() : numbers.first();
+      const open = async () => {
+        if (surface === 'all-files') await line.tap();
+        await number.tap();
+        if (!await page.getByPlaceholder('Leave feedback...').isVisible()) await number.locator('[data-utility-button]').tap();
+      };
+      await open();
+      const composer = page.getByPlaceholder('Leave feedback...');
+      await expect(composer).toBeVisible();
+      await composer.fill('Comment on the very last line');
+      // Firefox already ignores touch backdrop dismissal; Escape exercises draft retention there.
+      if (browserName === 'firefox') await page.keyboard.press('Escape');
+      else await page.touchscreen.tap(195, 690);
+      await expect(composer).not.toBeVisible();
+      if (surface === 'file') await line.tap();
+      else await open();
+      await expect(composer).toHaveValue('Comment on the very last line');
+      await page.screenshot({ path: join(proofDir, `last-line-${surface}-${side}-${testInfo.project.name}.png`) });
+      await page.getByRole('button', { name: 'Add Comment', exact: true }).tap();
+      await expect.poll(async () => (await draft(page)).codeAnnotations?.map((a: any) => ({ filePath: a.filePath, lineStart: a.lineStart, lineEnd: a.lineEnd, side: a.side, text: a.text }))).toEqual([
+        { filePath: 'main.ts', lineStart: 160, lineEnd: 160, side, text: 'Comment on the very last line' },
+      ]);
+    } finally { await session.close(); }
+  });
 });

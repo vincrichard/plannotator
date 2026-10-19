@@ -44,6 +44,7 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   const AskIcon = discussions?.supported ? QuestionMarkIcon : SparklesIcon;
   const askLabel = discussions?.supported ? 'Ask agent' : 'Ask AI';
   const dialogRef = useRef<HTMLDivElement>(null);
+  const backdropPressed = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sendingQuestion, setSendingQuestion] = useState(false);
   const askAIEnabled = !sendingQuestion && aiAvailable && !!onAskAI && commentText.trim().length > 0;
@@ -80,12 +81,17 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   return (
     <Dialog.Root
       open
-      onOpenChange={(open) => {
+      onOpenChange={(open, details) => {
+        // A gutter touch opens on pointerup; its trailing click can hit the new backdrop.
+        if (!open && details.reason === 'outside-press' && !backdropPressed.current) {
+          details.cancel();
+          return;
+        }
         if (!open) onCollapse();
       }}
     >
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-[1999] bg-background/80 backdrop-blur-sm" />
+        <Dialog.Backdrop onPointerDown={() => { backdropPressed.current = true; }} className="fixed inset-0 z-[1999] bg-background/80 backdrop-blur-sm" />
         <div className="pn-visible-viewport-overlay z-[2000] pointer-events-none flex items-center justify-center">
           <Dialog.Popup
             ref={dialogRef}
