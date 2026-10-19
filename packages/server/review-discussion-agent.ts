@@ -33,6 +33,8 @@ export function discoverDiscussionParent(env: NodeJS.ProcessEnv = process.env, c
 }
 
 export interface DiscussionAgentOptions {
+  /** Server-owned task instructions; the same read-only fork also generates guides. */
+  instructions?: string;
   sessionId?: string;
   onSessionId?: (sessionId: string) => void;
   /** Overrides are server-owned, never accepted from the browser. */
@@ -69,8 +71,8 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
       timer.unref?.();
       try {
         const text = parent.provider === 'codex'
-          ? await codexAnswer(parent, sessionId, `${INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath)
-          : await claudeAnswer(parent, sessionId, `${INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath);
+          ? await codexAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath)
+          : await claudeAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath);
         controller.signal.throwIfAborted();
         if (!sessionId || !text.trim()) throw new Error('Agent completed without a final answer');
         return { sessionId, text };

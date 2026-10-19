@@ -1,3 +1,4 @@
+import { createDiscussionAgent, type DiscussionParent } from "../review-discussion-agent";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
@@ -493,6 +494,7 @@ export async function parseGuideFileOutput(outputPath: string): Promise<CodeGuid
 }
 
 export interface GuideSessionBuildCommandOptions {
+  parent?: DiscussionParent;
   cwd: string;
   patch: string;
   diffType: DiffType;
@@ -510,6 +512,7 @@ export interface GuideSessionBuildCommandOptions {
 }
 
 export interface GuideSessionBuildCommandResult {
+  run?: (signal: AbortSignal) => Promise<string>;
   command: string[];
   outputPath?: string;
   captureStdout?: boolean;
@@ -543,7 +546,7 @@ export interface GuideSessionJobRef {
 
 export interface GuideSessionOnJobCompleteOptions {
   job: GuideSessionJobRef;
-  meta: { outputPath?: string; stdout?: string };
+  meta: { outputPath?: string; stdout?: string; finalOutput?: string };
   /** Changed files to validate refs against — normally the LAUNCH-time
    * snapshot (agent-jobs.ts's changedFilesSnapshot), the same set the model
    * planned section placement against, so a mid-generation diff/base/PR
@@ -698,7 +701,25 @@ export function createGuideSession(): GuideSession {
     launchChangedFiles,
     launchReviews,
 
-    async buildCommand({ cwd, patch, diffType, options, prMetadata, changedFiles, config, repair }) {
+    async buildCommand({ parent, cwd, patch, diffType, options, prMetadata, changedFiles, config, repair }) {
+      if (parent) {
+        // The launch snapshot remains authoritative even when the inherited conversation is older.
+        const prompt = repair ? buildGuideRepairPrompt(repair.payload) :
+          composeGuideMethodology(typeof config?.instructions === "string" ? config.instructions : undefined)
+          + "\n\n---\n\n" + buildGuideUserMessage(patch, "static-patch", { ...options, hasLocalAccess: false },
+            prMetadata ? { ...prMetadata, inlineDiff: true } : undefined, changedFiles);
+        return {
+          command: [], cwd, prompt, engine: parent.provider, model: "", label: repair ? "Guide Repair · session fork" : "Guided Review · session fork",
+          async run(signal) {
+            const agent = createDiscussionAgent({ ...parent, cwd }, {
+              instructions: 'Generate a Plannotator guided review in a fork of the original conversation. Use inherited context to explain intent, but describe only the supplied review snapshot. Do not implement changes, modify files, submit feedback, or contact external services. Only your final answer is published. Return only JSON matching this schema, without Markdown fences:\n' + GUIDE_SCHEMA_JSON,
+            });
+            try { return (await agent.answer(prompt, signal)).text; }
+            finally { agent.dispose(); }
+          },
+        };
+      }
+
       const engine = (typeof config?.engine === "string" ? config.engine : "claude") as "claude" | "codex" | MarkerEngineId;
       const explicitModel = typeof config?.model === "string" && config.model ? config.model : null;
       // "sonnet" is a Claude model, so we must NOT pass it to Codex or the
@@ -803,7 +824,10 @@ export function createGuideSession(): GuideSession {
       let rawCandidate: string | undefined;
 
       const markerEngine = MARKER_ENGINES[job.engine as MarkerEngineId];
-      if (markerEngine) {
+      if (meta.finalOutput !== undefined) {
+        rawCandidate = meta.finalOutput;
+        output = parseGuideOutputText(meta.finalOutput);
+      } else if (markerEngine) {
         // Recover the per-job nonce embedded in the prompt; without it no
         // block can be trusted, so parsing fails closed below (same
         // discipline as the review path's marker ingestion).

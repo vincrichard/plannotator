@@ -30,8 +30,12 @@ let previousPath: string | undefined;
 let previousDataDir: string | undefined;
 let previousPort: string | undefined;
 let previousRemote: string | undefined;
+let previousDiscussionProvider: string | undefined;
 
 beforeAll(() => {
+  previousDiscussionProvider = process.env.PLANNOTATOR_DISCUSSION_PROVIDER;
+  // Exercise standalone generation, even when the test runner is inside an agent session.
+  process.env.PLANNOTATOR_DISCUSSION_PROVIDER = "";
   binDir = mkdtempSync(join(tmpdir(), "plannotator-fake-claude-"));
   // A fake claude: swallow stdin (the prompt) and print one stream-json result line.
   const script = `#!/bin/sh
@@ -49,6 +53,8 @@ printf '%s\\n' '{"type":"result","is_error":false,"structured_output":${JSON.str
 });
 
 afterAll(() => {
+  if (previousDiscussionProvider === undefined) delete process.env.PLANNOTATOR_DISCUSSION_PROVIDER;
+  else process.env.PLANNOTATOR_DISCUSSION_PROVIDER = previousDiscussionProvider;
   if (previousPath === undefined) delete process.env.PATH;
   else process.env.PATH = previousPath;
   if (previousPort === undefined) delete process.env.PLANNOTATOR_PORT;

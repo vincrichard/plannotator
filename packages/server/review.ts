@@ -1331,7 +1331,11 @@ export async function startReviewServer(
     });
   };
 
+  const isRemote = isRemoteSession();
+  const discussionParent = discoverDiscussionParent(process.env, resolveAgentCwd());
+  const guideParent = !isRemote && !options.tailnetPublished ? discussionParent : null;
   const agentJobs = createAgentJobHandler({
+    guideForkProvider: guideParent?.provider,
     mode: "review",
     getServerUrl: () => agentApiUrl,
     getCwd: resolveAgentCwd,
@@ -1528,6 +1532,7 @@ export async function startReviewServer(
         }
 
         const built = await guide.buildCommand({
+          parent: guideParent ?? undefined,
           cwd,
           patch: launchPatch,
           diffType: launchDiffType as DiffType,
@@ -1876,7 +1881,6 @@ export async function startReviewServer(
   let boundPort: number | undefined;
   const aiRuntime = aiEnabled ? await createAIRuntime({ getCwd: resolveAgentCwd, sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
 
-  const isRemote = isRemoteSession();
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
@@ -2022,7 +2026,6 @@ export async function startReviewServer(
     },
   };
 
-  const discussionParent = discoverDiscussionParent(process.env, resolveAgentCwd());
   const discussions = createReviewDiscussions({
     file: join(getPlannotatorDataDir(), 'review-discussions', `${serverSession}.json`),
     serverSession,

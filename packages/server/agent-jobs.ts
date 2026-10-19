@@ -96,6 +96,8 @@ export interface AgentJobHandlerOptions {
   getServerUrl: () => string;
   /** Returns the working directory for spawned processes. */
   getCwd: () => string;
+  /** A known session makes guide generation use a fork of that provider. */
+  guideForkProvider?: "claude" | "codex";
   /**
    * Build the command server-side for a given provider.
    * Return an object with the command to spawn (and optional output path for result ingestion).
@@ -103,6 +105,8 @@ export interface AgentJobHandlerOptions {
    */
   buildCommand?: (provider: string, config?: Record<string, unknown>) => Promise<{
     command: string[];
+    /** Server-owned execution with final output only; never accepted from HTTP. */
+    run?: (signal: AbortSignal) => Promise<string>;
     outputPath?: string;
     captureStdout?: boolean;
     stdinPrompt?: string;
@@ -151,7 +155,7 @@ export interface AgentJobHandlerOptions {
    * Called after a job process exits with exit code 0.
    * Use for result ingestion (e.g., reading an output file and pushing annotations).
    */
-  onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string; changedFilesSnapshot?: string[]; launchReview?: GuideLaunchReview }) => void | Promise<void>;
+  onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; finalOutput?: string; cwd?: string; changedFilesSnapshot?: string[]; launchReview?: GuideLaunchReview }) => void | Promise<void>;
 }
 
 
@@ -184,7 +188,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   const { mode, getServerUrl, getCwd } = options;
 
   // --- State ---
-  const jobs = new Map<string, { info: AgentJobInfo; proc: ReturnType<typeof Bun.spawn> | null }>();
+  const jobs = new Map<string, { info: AgentJobInfo; proc: ReturnType<typeof Bun.spawn> | null; abort?: AbortController }>();
   const jobOutputPaths = new Map<string, string>();
   const jobChangedFilesSnapshots = new Map<string, string[]>();
   const jobLaunchReviews = new Map<string, GuideLaunchReview>();
@@ -210,7 +214,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       // Guided Review also runs on the marker engines (Cursor, OpenCode, Pi) —
       // same review-mode + binary-on-PATH gating as their own capability
       // entries below (NOTE: cursor's binary is `agent`).
-      available:
+      available: options.guideForkProvider ? onPath(options.guideForkProvider) :
         onPath("claude") ||
         onPath("codex") ||
         (mode === "review" && Object.values(MARKER_ENGINES).some((engine) => onPath(engine.binary))),
@@ -238,7 +242,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       }
       return { ...c, models };
     }));
-    return { mode, providers, available: providers.some((p) => p.available) };
+    return { mode, providers, ...(options.guideForkProvider && { guideForkProvider: options.guideForkProvider }), available: providers.some((p) => p.available) };
   }
 
   // --- SSE broadcasting ---
@@ -261,7 +265,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
     command: string[],
     label: string,
     outputPath?: string,
-    spawnOptions?: { captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean; thinking?: string; prUrl?: string; diffScope?: string; diffContext?: AgentJobInfo["diffContext"]; reviewProfileId?: string; reviewProfileLabel?: string; changedFilesSnapshot?: string[]; guideContext?: AgentJobInfo["guideContext"]; launchReview?: GuideLaunchReview },
+    spawnOptions?: { run?: (signal: AbortSignal) => Promise<string>; captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean; thinking?: string; prUrl?: string; diffScope?: string; diffContext?: AgentJobInfo["diffContext"]; reviewProfileId?: string; reviewProfileLabel?: string; changedFilesSnapshot?: string[]; guideContext?: AgentJobInfo["guideContext"]; launchReview?: GuideLaunchReview },
   ): AgentJobInfo {
     const source = jobSource(id);
 
@@ -296,7 +300,8 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
 
       const hasStdinPrompt = !!spawnOptions?.stdinPrompt;
 
-      proc = Bun.spawn(command, {
+      const abort = spawnOptions?.run ? new AbortController() : undefined;
+      proc = spawnOptions?.run ? null : Bun.spawn(command, {
         cwd: spawnCwd,
         stdin: hasStdinPrompt ? "pipe" : undefined,
         stdout: captureStdout ? "pipe" : "ignore",
@@ -319,7 +324,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       });
 
       // Write prompt to stdin and close (for providers that read prompt from stdin)
-      if (hasStdinPrompt && proc.stdin) {
+      if (hasStdinPrompt && proc?.stdin) {
         const sink = proc.stdin as import("bun").FileSink;
         sink.write(spawnOptions!.stdinPrompt!);
         sink.end();
@@ -328,7 +333,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       info.status = "running";
       info.cwd = spawnCwd;
       if (spawnOptions?.prompt) info.prompt = spawnOptions.prompt;
-      jobs.set(id, { info, proc });
+      jobs.set(id, { info, proc, abort });
       if (outputPath) jobOutputPaths.set(id, outputPath);
       if (spawnOptions?.cwd) jobOutputPaths.set(`${id}:cwd`, spawnOptions.cwd);
       if (spawnOptions?.changedFilesSnapshot) jobChangedFilesSnapshots.set(id, spawnOptions.changedFilesSnapshot);
@@ -340,7 +345,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       let logPending = "";
       let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-      if (proc.stderr && typeof proc.stderr !== "number") {
+      if (proc?.stderr && typeof proc.stderr !== "number") {
         (async () => {
           try {
             const reader = proc!.stderr as unknown as AsyncIterable<Uint8Array>;
@@ -373,7 +378,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
 
       // Drain stdout when capturing (for providers that return results on stdout)
       let stdoutBuf = "";
-      const stdoutDone = (captureStdout && proc.stdout && typeof proc.stdout !== "number")
+      const stdoutDone = (captureStdout && proc?.stdout && typeof proc.stdout !== "number")
         ? (async () => {
             // Format one complete JSONL line into a live-log delta (skip result
             // events — those are handled in onJobComplete).
@@ -427,7 +432,14 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
         : Promise.resolve();
 
       // Monitor process exit
-      proc.exited.then(async (exitCode) => {
+      let finalOutput: string | undefined;
+      const completion = spawnOptions?.run
+        ? Promise.resolve().then(() => spawnOptions.run!(abort!.signal)).then(
+            text => { finalOutput = text; return 0; },
+            error => { stderrBuf = error instanceof Error ? error.message : String(error); return 1; },
+          )
+        : proc!.exited;
+      completion.then(async (exitCode) => {
         // Wait for stdout to drain — grace period in case the pipe doesn't close cleanly.
         // The process is dead; if the stream hasn't flushed in 2s, the runtime has a bug.
         await Promise.race([stdoutDone, new Promise(r => setTimeout(r, 2000))]);
@@ -457,6 +469,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           try {
             await options.onJobComplete(entry.info, {
               outputPath,
+              finalOutput,
               stdout: captureStdout ? stdoutBuf : undefined,
               cwd: jobCwd,
               changedFilesSnapshot,
@@ -511,6 +524,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
     const entry = jobs.get(id);
     if (!entry || isTerminalStatus(entry.info.status)) return false;
 
+    entry.abort?.abort();
     if (entry.proc) {
       try {
         entry.proc.kill();
@@ -693,6 +707,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           }
 
           // Try server-side command building for known providers
+          let run: ((signal: AbortSignal) => Promise<string>) | undefined;
           let captureStdout = false;
           let stdinPrompt: string | undefined;
           let spawnCwd: string | undefined;
@@ -733,6 +748,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
             const built = await options.buildCommand(provider, Object.keys(config).length > 0 ? config : undefined);
             if (built) {
               command = built.command;
+              run = built.run;
               outputPath = built.outputPath;
               captureStdout = built.captureStdout ?? false;
               stdinPrompt = built.stdinPrompt;
@@ -756,7 +772,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
             }
           }
 
-          if (command.length === 0) {
+          if (command.length === 0 && !run) {
             return Response.json(
               { error: 'Missing "command" array' },
               { status: 400 },
@@ -764,6 +780,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           }
 
           const job = spawnJob(jobId, provider, command, label, outputPath, {
+            run,
             captureStdout,
             stdinPrompt,
             cwd: spawnCwd,

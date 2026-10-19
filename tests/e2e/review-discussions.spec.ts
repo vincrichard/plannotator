@@ -417,3 +417,37 @@ test.describe('touch annotation actions', () => {
     } finally { await session.close(); }
   });
 });
+
+test('guided review forks the launching session and keeps normal guide persistence and export', async ({ page }, testInfo) => {
+  const guide = { title: 'Session context guide', intent: 'Explain the changed call', sections: [
+    { title: 'Adjust widget input', overview: 'The conversation explains why the input changes.', diffs: [{ file: 'main.ts' }] },
+  ], unplacedFiles: [] };
+  const session = await review(page, JSON.stringify(guide));
+  try {
+    await page.getByRole('button', { name: 'Guide', exact: true }).click();
+    await expect(page.getByText(/Uses a fork of your Codex/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Engine', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Generate guide', exact: true }).click();
+    await expect.poll(() => session.requests().filter(r => r.method === 'thread/fork').length).toBe(1);
+    const fork = session.requests().find(r => r.method === 'thread/fork');
+    expect(fork.params.threadId).toBe(parentId);
+    expect(session.requests().some(r => r.method === 'thread/start')).toBe(false);
+    session.release();
+    await expect(page.getByText('Adjust widget input').first()).toBeVisible();
+    const completed = await page.evaluate(async () => (await fetch('/api/agents/jobs')).json());
+    const job = completed.jobs.find((job: { provider: string }) => job.provider === 'guide');
+    expect(job.status).toBe('done');
+    const saved = await page.evaluate(async id => (await fetch(`/api/guide/${id}`)).json(), job.id);
+    expect(saved.sections[0].diffs[0].file).toBe('main.ts');
+    const exported = await page.evaluate(async id => {
+      const response = await fetch(`/api/guide/${id}/export`);
+      return { status: response.status, text: await response.text() };
+    }, job.id);
+    expect(exported.status).toBe(200);
+    expect(exported.text).toContain('Session context guide');
+    await page.screenshot({ path: join(proofDir, `guide-fork-${testInfo.project.name}.png`) });
+    await page.reload();
+    // Completed guides reopen automatically when the jobs snapshot arrives.
+    await expect(page.getByText('Adjust widget input').first()).toBeVisible();
+  } finally { await session.close(); }
+});

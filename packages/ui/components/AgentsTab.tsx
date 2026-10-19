@@ -573,9 +573,11 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     setGuidePiThinking,
     setGuideCopilotModel,
   } = settings;
+  const guideForkProvider = capabilities?.guideForkProvider;
+  const forkGuide = selectedMode === 'guide' && !!guideForkProvider;
   const activeEngine = selectedMode === 'review' ? reviewEngine : selectedMode === 'tour' ? tourEngine : guideEngine;
   const loadCatalog = catalogs.load;
-  useEffect(() => loadCatalog(activeEngine), [loadCatalog, activeEngine]);
+  useEffect(() => { if (!forkGuide) loadCatalog(activeEngine); }, [loadCatalog, activeEngine, forkGuide]);
 
   // Review profiles (built-in default plus the user's enabled skills). Loaded
   // from the discovery endpoint and refreshed after a skill is added.
@@ -864,7 +866,8 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   // editor, so it sends none and the server applies the stored standing
   // instructions itself, keeping sidebar launches identical to launch-page
   // ones without a second read path.
-  const buildGuideLaunch = (): LaunchParams => buildGuideEngineParams();
+  const buildGuideLaunch = (): LaunchParams => guideForkProvider
+    ? { provider: 'guide', label: 'Guided Review' } : buildGuideEngineParams();
   const buildGuideEngineParams = (): LaunchParams => {
     if (guideEngine === 'cursor') {
       // Same omission rules as buildReviewLaunch: auto/empty ⇒ engine default.
@@ -926,7 +929,7 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     : selectedMode === 'tour'
       ? tourAvailable && engineAvailable(tourEngine) && modelsReady(tourEngine)
       : selectedMode === 'guide'
-        ? guideAvailable && reviewEngineAvailable(guideEngine) && guideLaunchable && modelsReady(guideEngine)
+        ? guideAvailable && guideLaunchable && (!!guideForkProvider || (reviewEngineAvailable(guideEngine) && modelsReady(guideEngine)))
         : false;
 
   const handleLaunch = async () => {
@@ -1173,7 +1176,10 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
               </>
             )}
 
-            {selectedMode === 'guide' && (
+            {forkGuide && (
+              <p className="text-xs text-muted-foreground">Uses a fork of your {REVIEW_ENGINE_LABEL[guideForkProvider!]} session with its conversation context.</p>
+            )}
+            {selectedMode === 'guide' && !forkGuide && (
               <>
                 {renderEngineSelect(guideEngine, setGuideEngine, availableReviewEngines, REVIEW_ENGINE_ICON, REVIEW_ENGINE_LABEL)}
                 {guideEngine === 'claude' && renderCatalogModelPicker('claude', guideClaudeModel, setGuideClaudeModel)}

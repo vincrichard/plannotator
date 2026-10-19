@@ -23,6 +23,7 @@ export interface GuideLaunchState {
   /** Claude / Codex model catalogs (discovered from the installed CLIs). */
   catalogs: ModelCatalogs;
   guideAvailable: boolean;
+  forkProvider?: "claude" | "codex";
   availableEngines: ReviewEngine[];
   /** Effective engine: the persisted choice, snapped to an available one. */
   engine: ReviewEngine;
@@ -77,14 +78,15 @@ export function useGuideLaunch(
   const providerAvailable = (id: string) =>
     capabilities?.providers.some((p) => p.id === id && p.available) ?? false;
   const guideAvailable = providerAvailable('guide');
+  const forkProvider = capabilities?.guideForkProvider;
   const availableEngines = GUIDE_ENGINES.filter(providerAvailable);
   // A persisted engine can be unavailable on this machine — fall back to the
   // first available one rather than a dead selection.
   const engine: ReviewEngine = providerAvailable(guideEngine) ? guideEngine : (availableEngines[0] ?? guideEngine);
   const loadCatalog = catalogs.load;
   useEffect(() => {
-    if (loadModels) loadCatalog(engine);
-  }, [loadModels, loadCatalog, engine]);
+    if (loadModels && !forkProvider) loadCatalog(engine);
+  }, [loadModels, loadCatalog, engine, forkProvider]);
 
   // Marker model catalogs are discovered server-side and delivered on the
   // capability entry; fall back to the engine-default option until then.
@@ -126,7 +128,7 @@ export function useGuideLaunch(
   // stored standing instructions itself.
   const buildParams = (instructions?: string): AgentLaunchParams => {
     const live = instructions?.trim();
-    const params = buildEngineParams();
+    const params = forkProvider ? { provider: 'guide', label: 'Guided Review' } : buildEngineParams();
     return live ? { ...params, instructions: live } : params;
   };
 
@@ -178,6 +180,7 @@ export function useGuideLaunch(
     settings,
     catalogs,
     guideAvailable,
+    forkProvider,
     availableEngines,
     engine,
     cursorOptions,
@@ -188,7 +191,7 @@ export function useGuideLaunch(
     effectiveOpencodeModel,
     effectivePiModel,
     effectiveCopilotModel,
-    canLaunch: guideAvailable && availableEngines.length > 0 && modelsReady,
+    canLaunch: guideAvailable && (!!forkProvider || (availableEngines.length > 0 && modelsReady)),
     buildParams,
   };
 }

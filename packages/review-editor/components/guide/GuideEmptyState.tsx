@@ -467,12 +467,17 @@ export const GuideEmptyState: React.FC<GuideEmptyStateProps> = ({ capabilities, 
         </div>
       )}
 
-      {!guideAvailable || availableEngines.length === 0 ? (
+      {!guideAvailable || (!launch.forkProvider && availableEngines.length === 0) ? (
         <p className="mt-8 text-xs text-muted-foreground/70">
           Guided review needs an agent CLI (Claude, Codex, Cursor, OpenCode, Pi, or Copilot) available on this machine.
         </p>
       ) : (
         <>
+          {launch.forkProvider ? (
+            <p className="mt-6 text-xs text-muted-foreground">
+              Uses a fork of your {REVIEW_ENGINE_LABEL[launch.forkProvider]} session with its conversation context.
+            </p>
+          ) : (
           <div className="mt-6 w-fit max-w-full rounded-lg border border-border/50 bg-card/50 px-4 py-3.5">
             <div className="mb-2.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
               Model defaults
@@ -506,6 +511,8 @@ export const GuideEmptyState: React.FC<GuideEmptyStateProps> = ({ capabilities, 
               Newer models with lower effort are recommended — guides generate quicker.
             </p>
           </div>
+
+          )}
 
           <div className="mt-3">
             <button
