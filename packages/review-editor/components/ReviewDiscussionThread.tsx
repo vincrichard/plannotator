@@ -13,6 +13,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   const readonly = thread.snapshotId !== discussions.snapshotId;
   const busy = pending || thread.status === 'answering' || discussions.ended;
   const unread = thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt;
+  const awaitingReply = thread.messages.length === 1 && thread.messages[0].role === 'assistant';
   const run = async (action: () => Promise<unknown>) => {
     setPending(true); setError(undefined);
     try { await action(); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -22,7 +23,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   return <section className="review-comment" data-discussion-id={thread.id}>
     <button className="w-full text-left text-xs flex items-center gap-2" aria-expanded={expanded} onClick={() => { discussions.setThreadExpanded(thread.id, !expanded); discussions.markRead(thread); }}>
       <span className="font-medium">Discussion</span>
-      <span className="text-muted-foreground">{thread.status === 'answering' ? 'Answering…' : thread.status === 'answered' ? 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
+      <span className="text-muted-foreground">{thread.status === 'answering' ? 'Answering…' : thread.status === 'answered' ? awaitingReply ? 'Awaiting your reply' : 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
       {unread && <span className="text-primary">Unread</span>}
       <span className="truncate ml-auto">{thread.messages[0]?.text}</span>
     </button>

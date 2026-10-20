@@ -7,21 +7,20 @@
  * start posting in under a minute. Edit freely — this file is the single source
  * of truth for the review agent-facing contract surface.
  *
- * The only dynamic value is `origin`, which is interpolated at click time from
- * `window.location.origin` so the agent gets the correct base URL whether the
- * server is running on a random local port or the fixed remote port (19432).
+ * The caller supplies the review's base URL, including its reverse-proxy path.
+ * Access tokens and cookies are not copied into these instructions.
  */
 export function buildReviewAgentInstructions(origin: string): string {
   return `# Plannotator — External Review Comments
 
 You can submit review feedback on the user's current code-review session by POSTing annotations to a small HTTP API. The user will see them immediately — pinned inline to the relevant diff lines, plus entries in a sidebar — and can accept, edit, or delete them.
 
-This is one-way submission. Any tool can post: linters, agents, scripts. The user does not see who you are unless you tell them via \`text\` or \`author\`.
+Regular comments are one-way submissions; use a discussion below when the reviewer should reply. Any tool can post: linters, agents, scripts. The user does not see who you are unless you tell them via \`text\` or \`author\`.
 
 ## Base URL
 ${origin}
 
-All endpoints below are relative to that base. No authentication.
+All endpoints below are relative to that base. Direct loopback access needs no authentication. Through a reverse proxy, retain this review's path and authenticate using its private access link/cookie; do not use the proxy root or bypass its authentication.
 
 ## Workflow
 1. Read the diff so you know what to comment on.
@@ -29,6 +28,33 @@ All endpoints below are relative to that base. No authentication.
 3. Optionally clean up your previous annotations before reposting on a re-run.
 
 There is no "send" or "done" step — each POST is live the moment it lands.
+
+## Starting a discussion instead of leaving a regular comment
+
+Use this when the reviewer should be able to reply, resolve the thread, or turn it into a change request. Read GET ${origin}/api/review-discussions first: this requires \`available: true\` and the same local Codex/Claude parent session setup as Ask agent. Unsupported review modes return a reason; do not claim a thread was created if the request fails.
+
+Read GET ${origin}/api/diff for \`serverSession\` and \`snapshotId\` and the reviewed diff. Then POST ${origin}/api/review-discussions with:
+
+\`\`\`json
+{
+  "id": "agent-finding-unique-id",
+  "serverSession": "<serverSession from /api/diff>",
+  "snapshotId": "<snapshotId from /api/diff>",
+  "role": "assistant",
+  "text": "This removal loses the retry guard. Is that intentional?",
+  "anchor": {
+    "scope": "line",
+    "filePath": "src/server/auth.ts",
+    "lineStart": 42,
+    "lineEnd": 42,
+    "side": "old"
+  }
+}
+\`\`\`
+
+Use a unique id for each thread and reuse it only when retrying the same opening message. For file scope keep its filePath and use lineStart/lineEnd 0; for general scope use filePath "", lineStart/lineEnd 0 and side "new". Optional \`codeContext\` supplies selected reviewed code, especially for unchanged files absent from the diff.
+
+The opener is published as an Agent message without running a model. The reviewer's first reply starts a read-only fork of the session that launched this review, with the opener and captured review context; later replies reuse that discussion's fork. It does not resume an arbitrary posting agent's session. Only final answers are displayed. Threads persist with the running review and appear on its other open clients. They are excluded from normal feedback until the reviewer explicitly saves a change request. POST returns 201 with \`thread\` (200 for an identical retry); stale session/snapshot or ended reviews return 409. Do not submit or approve the review yourself.
 
 ## Reading the diff
 

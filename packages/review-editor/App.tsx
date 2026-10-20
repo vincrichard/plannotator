@@ -1149,7 +1149,7 @@ const ReviewApp: React.FC = () => {
   // via /api/external-annotations. The instruction body lives in a separate
   // module (utils/reviewAgentInstructions.ts) so it's easy to edit independently.
   const handleCopyAgentInstructions = useCallback(async () => {
-    const payload = buildReviewAgentInstructions(window.location.origin);
+    const payload = buildReviewAgentInstructions(new URL('.', window.location.href).href.replace(/\/$/, ''));
     if (await copyTextToClipboard(payload)) {
       toast.success('Agent instructions copied');
     } else {

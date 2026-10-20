@@ -9,6 +9,7 @@ let codeViewUnmounts = 0;
 let scrollTargets: Array<Record<string, unknown>> = [];
 let lastCodeViewProps: Record<string, unknown> | null = null;
 let toolbarSelections: Array<SelectedLineRange | null> = [];
+let workerPoolReady = true;
 
 // Captured BEFORE the mocks below replace the specifiers, so this file can put
 // the real modules back when it is done. `mock.module` is process global and
@@ -29,7 +30,7 @@ const realPierreDiffsReact = { ...(await import('@pierre/diffs/react')) };
 const realResolveSyntaxTheme = (await import('@plannotator/ui/utils/syntaxTheme')).resolveSyntaxTheme;
 
 mock.module('../workerPool', () => ({
-  useIsWorkerPoolReadyOrDisabled: () => true,
+  useIsWorkerPoolReadyOrDisabled: () => workerPoolReady,
   useWorkerPoolThemeSync: () => {},
 }));
 
@@ -170,6 +171,7 @@ afterEach(async () => {
   scrollTargets = [];
   lastCodeViewProps = null;
   toolbarSelections = [];
+  workerPoolReady = true;
 });
 
 // Hand the real @pierre/diffs back to the process. Only the two library
@@ -207,6 +209,23 @@ describe('the @pierre/diffs restore handles', () => {
 });
 
 describe('AllFilesCodeView guide mount state', () => {
+  test.skipIf(!hasDom)('retains annotations received while the worker pool is loading', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const files = [file];
+    workerPoolReady = false;
+    await render({ files });
+    const annotations = [{ id: 'discussion-marker-agent-opening', type: 'comment' as const, filePath: file.path, lineStart: 1, lineEnd: 1, side: 'old' as const, text: 'answered:1', createdAt: 1 }];
+    await render({ files, annotations });
+    expect(codeViewMounts).toBe(0);
+    workerPoolReady = true;
+    await render({ files, annotations });
+    const items = lastCodeViewProps?.initialItems as Array<{ annotations: Array<{ metadata: { annotationId: string } }> }>;
+    expect(items[0].annotations.map(annotation => annotation.metadata.annotationId)).toContain('discussion-marker-agent-opening');
+    expect(codeViewMounts).toBe(1);
+  });
+
   test.skipIf(!hasDom)('does not remount when the live shell collapse value changes', async () => {
     host = document.createElement('div');
     host.style.height = '400px';

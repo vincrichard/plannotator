@@ -123,13 +123,82 @@ async function askOnLine(page: Page, text: string) {
   await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
 }
 async function expandThread(thread: Locator) {
-  await expect(thread).toBeVisible();
-  const header = thread.getByRole('button', { expanded: false });
-  if (await header.isVisible()) await header.click();
+  const header = thread.locator('button[aria-expanded]');
+  await expect(header).toBeVisible();
+  if (await header.getAttribute('aria-expanded') === 'false') await header.click();
+  await expect(header).toHaveAttribute('aria-expanded', 'true');
 }
 
 test.beforeAll(() => mkdirSync(proofDir, { recursive: true }));
 test.use({ viewport: { width: 1600, height: 1000 }, actionTimeout: 15_000, screenshot: 'only-on-failure' });
+
+for (const mobile of [false, true]) test.describe(`agent opener on ${mobile ? 'phone' : 'desktop'}`, () => {
+  test.use({ hasTouch: mobile });
+  test('agent-started discussions sync, reply, resolve and convert', async ({ page }, testInfo) => {
+    if (mobile) await page.setViewportSize({ width: 390, height: 800 });
+    const session = await review(page);
+    const second = await page.context().newPage();
+    try {
+      await second.goto(page.url());
+      const diff = await (await page.request.get(new URL('/api/diff', page.url()).href)).json();
+      const endpoint = new URL('/api/review-discussions', page.url()).href;
+      const opening = {
+        id: 'agent-opening', serverSession: diff.serverSession, snapshotId: diff.snapshotId,
+        role: 'assistant', text: 'Agent finding: removing this input may change retry behavior.',
+        anchor: { filePath: 'main.ts', lineStart: 2, lineEnd: 2, side: 'old', scope: 'line' },
+      };
+      expect((await page.request.post(endpoint, { data: opening })).status()).toBe(201);
+      expect((await page.request.post(endpoint, { data: opening })).status()).toBe(200);
+      expect((await page.request.post(endpoint, { data: { ...opening, id: 'agent-to-resolve', text: 'Agent finding to dismiss.', anchor: { ...opening.anchor, side: 'new' } } })).status()).toBe(201);
+      expect(session.requests()).toEqual([]);
+      const firstThread = page.locator('[data-discussion-id="agent-opening"]');
+      const secondThread = second.locator('[data-discussion-id="agent-opening"]');
+      await expect(firstThread).toContainText('Awaiting your reply');
+      await expect(secondThread).toContainText('Awaiting your reply');
+      await expandThread(secondThread);
+      await expect(secondThread.getByText('Agent', { exact: true })).toBeVisible();
+      expect((await draft(page)).codeAnnotations ?? []).toEqual([]);
+      await secondThread.getByLabel('Follow-up question', { exact: true }).fill('Explain further: which behavior changes?');
+      await secondThread.getByRole('button', { name: 'Send question', exact: true }).click();
+      await expect.poll(() => session.requests().filter(r => r.method === 'turn/start').length).toBe(1);
+      const prompt = session.requests().find(r => r.method === 'turn/start').params.input[0].text;
+      expect(prompt).toContain(opening.text);
+      expect(prompt).toContain('Reviewed patch');
+      expect(prompt).toContain('main.ts:2-2 (old)');
+      expect(prompt).toContain('Explain further: which behavior changes?');
+      session.release();
+      await expect(secondThread).toContainText('Completed follow-up answer.');
+      await page.reload();
+      await expandThread(firstThread);
+      await expect(firstThread).toContainText('Completed follow-up answer.');
+      await expect(firstThread).not.toContainText('PRIVATE_');
+      const resolved = page.locator('[data-discussion-id="agent-to-resolve"]');
+      await expandThread(resolved);
+      await resolved.getByRole('button', { name: 'Resolve', exact: true }).click();
+      await expect(resolved).toHaveCount(0);
+      await firstThread.getByRole('button', { name: 'Request change', exact: true }).click();
+      await firstThread.getByLabel('Change request', { exact: true }).fill('Keep the retry behavior explicit.');
+      await firstThread.getByRole('button', { name: 'Save change request', exact: true }).click();
+      await expect(firstThread).toHaveCount(0);
+      await expect(secondThread).toHaveCount(0);
+      await expect.poll(async () => (await draft(page)).codeAnnotations).toEqual([
+        expect.objectContaining({ filePath: 'main.ts', lineStart: 2, lineEnd: 2, side: 'old', text: 'Keep the retry behavior explicit.' }),
+      ]);
+      await second.close();
+      await page.reload();
+      await page.getByRole('button', { name: 'Restore', exact: true }).click();
+      await page.screenshot({ path: join(proofDir, `agent-opening-${mobile ? 'phone' : 'desktop'}-${testInfo.project.name}.png`) });
+      const sent = page.waitForRequest(request => request.url().endsWith('/api/feedback') && request.method() === 'POST');
+      if (mobile) await page.getByRole('button', { name: 'Options', exact: true }).click();
+      await page.getByRole('button', { name: /^Send feedback/i }).click();
+      const payload = (await sent).postDataJSON();
+      expect(payload.annotations).toHaveLength(1);
+      expect(payload.annotations[0]).toMatchObject({ filePath: 'main.ts', side: 'old', text: 'Keep the retry behavior explicit.' });
+      expect(payload.feedback).not.toMatch(/Agent finding|Explain further|Completed follow-up/);
+      await expect.poll(session.output).toContain('Keep the retry behavior explicit.');
+    } finally { await second.close(); await session.close(); }
+  });
+});
 
 test('questions run separately while reviewing; only converted requests enter persisted final feedback', async ({ page }, testInfo) => {
   const session = await review(page);

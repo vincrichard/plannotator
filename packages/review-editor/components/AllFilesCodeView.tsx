@@ -1985,8 +1985,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   useEffect(() => {
     const handle = viewerRef.current;
     const prev = prevAnnotationsRef.current;
+    // Retain incoming annotations until the worker-pool gate mounts CodeView.
+    if (handle == null) return;
     prevAnnotationsRef.current = annotations;
-    if (handle == null || prev === annotations) return;
+    if (prev === annotations) return;
 
     const signatures = (list: CodeAnnotation[]) => {
       const map = new Map<string, string>();
@@ -2029,7 +2031,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         syncItemAnnotations(path, itemId, annotations, aiMessages);
       }
     }
-  }, [annotations, aiMessages, prUrl, prDiffScope, filePathToItemIds, syncItemAnnotations]);
+  }, [annotations, aiMessages, prUrl, prDiffScope, filePathToItemIds, syncItemAnnotations, workerPoolReady]);
 
   // AI answers stream independently of review annotations. Any message change
   // republishes only the files represented by the previous or next message set;

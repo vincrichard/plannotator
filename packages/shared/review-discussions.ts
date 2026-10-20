@@ -94,7 +94,8 @@ export function createReviewDiscussions(options: Options) {
       return;
     }
     running.set(thread.id, { controller, agent });
-    const context = thread.messages.some(message => message.role === 'assistant')
+    // An agent-authored opener has not yet been seen by the discussion fork.
+    const context = thread.messages.slice(1).some(message => message.role === 'assistant')
       ? `Continue the same discussion at ${thread.anchor.filePath || '(whole review)'}:${thread.anchor.lineStart}-${thread.anchor.lineEnd} (${thread.anchor.side}), snapshot ${thread.snapshotId}. Use the reviewed code captured earlier; working files may have changed.`
       : thread.context;
     const prompt = `${context}\n\nReviewer question:\n${question}\n\nAnswer this question only. Do not edit files, run modifications, submit or approve a review, or start another agent. This is a discussion fork; the parent agent receives change requests only on final review submission. Return a self-contained final answer; internal reasoning and intermediate messages are not displayed.`;
@@ -154,10 +155,12 @@ export function createReviewDiscussions(options: Options) {
       if (stopped || options.isDecided()) return fail('This review has ended.', 409);
       try {
         if (url.pathname === BASE && req.method === 'POST') {
-          if (typeof body.id !== 'string' || !ID.test(body.id) || !text(body.text)) return fail('A valid id and question are required');
+          const role = body.role === undefined ? 'user' : body.role;
+          if (role !== 'user' && role !== 'assistant') return fail('Opening role must be user or assistant');
+          if (typeof body.id !== 'string' || !ID.test(body.id) || !text(body.text)) return fail('A valid id and opening message are required');
           const existing = threads.find(t => t.id === body.id);
           if (existing) {
-            if (existing.messages[0]?.text !== body.text || existing.snapshotId !== body.snapshotId || JSON.stringify(existing.anchor) !== JSON.stringify(anchorInput(body.anchor))) return fail('This request id was already used for a different question.', 409);
+            if (existing.messages[0]?.role !== role || existing.messages[0]?.text !== body.text || existing.snapshotId !== body.snapshotId || JSON.stringify(existing.anchor) !== JSON.stringify(anchorInput(body.anchor))) return fail('This request id was already used for a different opening message.', 409);
             return Response.json({ thread: snapshot().threads.find(t => t.id === body.id) });
           }
           if (threads.length >= 100) return fail('This review already has 100 discussions.', 409);
@@ -168,13 +171,14 @@ export function createReviewDiscussions(options: Options) {
           if (body.codeContext !== undefined && (typeof body.codeContext !== 'string' || body.codeContext.length > 64_000)) return fail('Invalid code context');
           const now = Date.now();
           const thread: StoredThread = {
-            id: body.id, anchor, cwd: context.cwd, snapshotId: context.snapshotId, status: 'answering', createdAt: now, updatedAt: now,
-            messages: [{ id: `${body.id}-question`, role: 'user', text: body.text, createdAt: now }],
+            id: body.id, anchor, cwd: context.cwd, snapshotId: context.snapshotId, status: role === 'assistant' ? 'answered' : 'answering', createdAt: now, updatedAt: now,
+            messages: [{ id: `${body.id}-question`, role, text: body.text, createdAt: now }],
             context: `Plannotator review discussion.\n${context.description}\nSnapshot: ${context.snapshotId}\nLocation: ${anchor.filePath || '(whole review)'}:${anchor.lineStart}-${anchor.lineEnd} (${anchor.side})\nSelected code from the review:\n${body.codeContext ?? anchor.selectedText ?? ''}\nReviewed patch${context.patch.length > 200_000 ? ' (truncated)' : ''}:\n${context.patch.slice(0, 200_000)}`,
           };
+          if (role === 'assistant') thread.context += `\n\nAgent opening message:\n${body.text}`;
           threads.push(thread);
           try { save(); } catch (error) { threads.pop(); throw error; }
-          run(thread, body.text);
+          if (role === 'user') run(thread, body.text);
           return Response.json({ thread: snapshot().threads.find(t => t.id === thread.id) }, { status: 201 });
         }
         const match = url.pathname.match(/^\/api\/review-discussions\/([a-zA-Z0-9_-]{1,128})(\/messages)?$/);
