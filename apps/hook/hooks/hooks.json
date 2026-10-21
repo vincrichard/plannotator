@@ -2,6 +2,12 @@
   "description": "Plannotator: plan review on ExitPlanMode's permission request. Where Claude Code runs hooks modules (interactive CLI sessions), the mod (mod/register.ts) makes plan review, annotate, code review and annotate-last non-blocking, unless the user turned it off (PLANNOTATOR_CLAUDE_MOD=0 or \"claudeCodeMod\": false in config.json); then the module passes every hook through.",
   "modules": ["./mod/register.ts"],
   "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "plannotator turn-snapshot", "timeout": 120 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "plannotator turn-snapshot", "timeout": 120 }] }
+    ],
     "PreToolUse": [
       {
         "matcher": "EnterPlanMode",

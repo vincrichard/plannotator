@@ -23,6 +23,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { rmSync } from "node:fs";
+import { captureReviewTurn, readReviewTurn, reviewTurnSession } from "./review-turn";
 import {
   type ReviewJjRuntime,
   detectJjWorkspace,
@@ -270,8 +271,15 @@ export function createGitProvider(runtime: ReviewGitRuntime): VcsProvider {
       );
     },
 
-    getContext(cwd?: string): Promise<GitContext> {
-      return getGitContext(runtime, cwd);
+    async getContext(cwd?: string): Promise<GitContext> {
+      const context = await getGitContext(runtime, cwd);
+      const session = reviewTurnSession();
+      const lastTurn = session && context.root ? await readReviewTurn(context.root, session) : null;
+      if (lastTurn) {
+        context.diffOptions.splice(context.diffOptions.findIndex(option => option.id === "uncommitted") + 1, 0,
+          { id: `commit:${lastTurn}`, label: "Last turn changes" });
+      }
+      return context;
     },
 
     runDiff(diffType: DiffType, defaultBranch: string, cwd?: string, options?: GitDiffOptions): Promise<DiffResult> {
@@ -555,7 +563,13 @@ export function createVcsApi(providers: readonly VcsProvider[]): VcsApi {
     },
 
     async prepareLocalReviewDiff(options: PrepareLocalReviewDiffOptions): Promise<PreparedLocalReviewDiff> {
-      const { provider, gitContext } = await getContextWithProvider(options.cwd, options.vcsType);
+      const provider = await getProviderForSelection(options.vcsType, options.cwd);
+      const session = reviewTurnSession();
+      if (session && provider.id === "git") {
+        try { await captureReviewTurn("review", options.cwd ?? process.cwd(), session); }
+        catch (error) { console.error("Could not capture last turn changes:", error instanceof Error ? error.message : error); }
+      }
+      const gitContext = await provider.getContext(options.cwd);
       const ownsRequestedDiffType = options.requestedDiffType !== undefined
         && provider.ownsDiffType(options.requestedDiffType);
       const requestedDiffType = resolveRequestedDiffType(

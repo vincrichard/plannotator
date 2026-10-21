@@ -5,6 +5,7 @@ import {
 } from "./cli";
 
 const INTERNAL_SUBCOMMANDS = [
+  "turn-snapshot",
   "install-runtime",
   "opencode-plan",
   "opencode-review",

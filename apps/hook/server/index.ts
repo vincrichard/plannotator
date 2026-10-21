@@ -277,6 +277,20 @@ takeHostMessagesPath();
 const hostReviewId = takeHostReviewId();
 
 const rawArgs = process.argv.slice(2);
+{
+  const args = rawArgs;
+  if (args[0] === "turn-snapshot") {
+    if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
+      console.log("Usage: plannotator turn-snapshot\nCapture UserPromptSubmit/Stop hook input for Last turn changes.");
+    } else {
+      const { runTurnSnapshotHook } = await import("./turn-snapshot");
+      try { await runTurnSnapshotHook(JSON.parse(await Bun.stdin.text())); }
+      catch (error) { console.error("Could not capture last turn changes:", error instanceof Error ? error.message : error); }
+    }
+    // Snapshot failures must never block the user's prompt or the agent's response.
+    process.exit(0);
+  }
+}
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's
 // CLI and worker, `t3-hook` the Claude Bash hook and its settings helper.
 // Loaded only when asked for, so no other subcommand evaluates any of it.

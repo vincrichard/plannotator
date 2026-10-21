@@ -3472,6 +3472,8 @@ const ReviewApp: React.FC = () => {
     if (snappedCommitDiffOnLoad.current || isLoading || !diffData) return;
     snappedCommitDiffOnLoad.current = true;
     if (!isCommitDiffType(diffType)) return;
+    // Named snapshot scopes have a marked picker option and an ordinary exit path.
+    if (gitContext?.diffOptions.some(option => option.id === activeDiffBase)) return;
     if (panelView === 'commits') return; // defensive: unreachable on load
     const target = resolveCommitExitDiff(null, {
       preferredDefault: configStore.get('defaultDiffType'),
@@ -3479,7 +3481,7 @@ const ReviewApp: React.FC = () => {
       activeWorktreePath,
     });
     void fetchDiffSwitch(target.diffType);
-  }, [isLoading, diffData, diffType, panelView, gitContext, activeWorktreePath, fetchDiffSwitch]);
+  }, [isLoading, diffData, diffType, activeDiffBase, panelView, gitContext, activeWorktreePath, fetchDiffSwitch]);
 
   // Self-heal a conflicted persisted pair: reviewPanelView=sections with a
   // non-since-base defaultDiffType. Every UI writer enforces the coupling
