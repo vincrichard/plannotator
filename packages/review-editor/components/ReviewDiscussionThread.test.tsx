@@ -14,10 +14,10 @@ const thread: ReviewDiscussion = {
 let root: Root | undefined;
 let host: HTMLElement | undefined;
 let originalFetch: typeof fetch;
-function Harness({ ready, currentThread = thread }: { ready: boolean; currentThread?: ReviewDiscussion }) {
+function Harness({ ready, currentThread }: { ready: boolean; currentThread?: ReviewDiscussion }) {
   const discussions = useReviewDiscussionState('snapshot');
   return <ReviewDiscussionsProvider value={{ ...discussions, conversionReady: ready, conversionUnavailableReason: 'Restore saved comments first' }}>
-    <ReviewDiscussionThread thread={currentThread} />
+    <ReviewDiscussionThread thread={currentThread ?? discussions.threads[0] ?? thread} />
   </ReviewDiscussionsProvider>;
 }
 afterEach(async () => {
@@ -52,6 +52,38 @@ describe.if(typeof document !== 'undefined')('discussion conversion', () => {
     expect(host.querySelector('details')!.open).toBe(false);
     expect(host.querySelector('details')!.textContent).toContain('Second answer');
     expect(host.querySelector('details')!.textContent).not.toContain('Third question');
+  });
+
+  test('quiet answers can keep waiting without inventing activity, then cancel while retaining the question', async () => {
+    originalFetch = globalThis.fetch;
+    const startedAt = Date.now() - 20 * 60_000;
+    let current: ReviewDiscussion = { ...thread, status: 'answering', activity: { startedAt, lastActivityAt: startedAt } };
+    const mutations: { action: string; messageId: string }[] = [];
+    globalThis.fetch = Object.assign(async (_url: string | URL | Request, options?: RequestInit) => {
+      if (options) {
+        const body = JSON.parse(String(options.body)); mutations.push(body);
+        current = body.action === 'keep-waiting'
+          ? { ...current, activity: { ...current.activity!, waitRequestedAt: Date.now() } }
+          : { ...current, status: 'error', error: 'Answer cancelled' };
+      }
+      return Response.json({ supported: true, available: true, version: mutations.length, threads: [current] });
+    }, { preconnect: originalFetch.preconnect });
+    host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+    await act(async () => root!.render(<Harness ready />));
+    await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    const button = (label: string) => [...host!.querySelectorAll('button')].find(item => item.textContent === label);
+    // These action labels and the quiet state are deliberate user controls.
+    expect(host.textContent).toContain('No activity received');
+    expect(button('Send question')!.disabled).toBe(true);
+    await act(async () => button('Keep waiting')!.click());
+    expect(button('Keep waiting')).toBeUndefined();
+    expect(current.activity!.lastActivityAt).toBe(startedAt);
+    expect(current.status).toBe('answering');
+    await act(async () => button('Cancel answer')!.click());
+    expect(mutations.map(m => [m.action, m.messageId])).toEqual([['keep-waiting', 'message-one'], ['cancel', 'message-one']]);
+    expect(button('Cancel answer')).toBeUndefined();
+    expect(host.textContent).toContain('Answer cancelled');
+    expect(current.messages).toEqual(thread.messages);
   });
 
   test('cannot drop a thread while ordinary drafts are unreadable or awaiting restoration', async () => {

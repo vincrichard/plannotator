@@ -1,26 +1,26 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test, setSystemTime } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createReviewDiscussions } from './review-discussions';
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { setSystemTime(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussion-test-'));
   roots.push(root);
   let snapshotId = 'review-one';
   let decided = false;
-  const calls: { prompt: string; signal: AbortSignal; complete(text: string): void; sessionId?: string }[] = [];
+  const calls: { prompt: string; signal: AbortSignal; complete(text: string): void; activity(): void; sessionId?: string }[] = [];
   const options = {
     file: join(root, 'threads.json'), serverSession: 'review-session', provider: 'codex' as const,
     getSnapshotId: () => snapshotId,
     getContext: () => ({ snapshotId, patch: '@@ -1 +1 @@\n-old\n+new', description: 'fixture repo', cwd: root }),
     isDecided: () => decided,
     createAgent: ({ sessionId, onSessionId }: { sessionId?: string; onSessionId(id: string): void }) => ({
-      answer: (prompt: string, signal: AbortSignal) => new Promise<{ sessionId: string; text: string }>(resolve => {
+      answer: (prompt: string, signal: AbortSignal, onActivity?: () => void) => new Promise<{ sessionId: string; text: string }>(resolve => {
         onSessionId(sessionId ?? 'private-fork');
-        calls.push({ prompt, signal, sessionId, complete: text => resolve({ sessionId: 'private-fork', text }) });
+        calls.push({ prompt, signal, sessionId, activity: () => onActivity?.(), complete: text => resolve({ sessionId: 'private-fork', text }) });
       }),
       dispose() {},
     }),
@@ -137,6 +137,40 @@ describe('review discussions', () => {
     f.calls[1].complete('Second finished first'); await settle();
     expect(f.store.snapshot().threads[0].status).toBe('answering');
     expect(f.store.snapshot().threads[1].status).toBe('answered');
+    f.store.dispose();
+  });
+
+  test('silent answers keep running; waiting acknowledges silence, cancel ignores late output and stale actions', async () => {
+    const f = setup();
+    const start = Date.now();
+    setSystemTime(start);
+    await f.request('POST', '', f.question);
+    const messageId = f.store.snapshot().threads[0].messages[0].id;
+    expect(f.store.snapshot().threads[0].activity).toEqual({ startedAt: start });
+    setSystemTime(start + 1000);
+    f.calls[0].activity();
+    const version = f.store.snapshot().version;
+    f.calls[0].activity();
+    expect(f.store.snapshot().version).toBe(version);
+    setSystemTime(start + 20 * 60_000);
+    expect(f.store.snapshot().threads[0].status).toBe('answering');
+    expect(f.calls[0].signal.aborted).toBe(false);
+    expect((await f.request('PATCH', '/question-1', { action: 'keep-waiting', messageId }))!.status).toBe(200);
+    expect(f.store.snapshot().threads[0].activity).toEqual({ startedAt: start, lastActivityAt: start + 1000, waitRequestedAt: start + 20 * 60_000 });
+    expect(f.calls).toHaveLength(1);
+    expect((await f.request('PATCH', '/question-1', { action: 'cancel', messageId }, { origin: 'https://attacker.test' }))!.status).toBe(403);
+    expect(f.calls[0].signal.aborted).toBe(false);
+    expect((await f.request('PATCH', '/question-1', { action: 'cancel', messageId }))!.status).toBe(200);
+    expect(f.calls[0].signal.aborted).toBe(true);
+    await f.request('POST', '/question-1/messages', { id: 'followup', text: 'Try again' });
+    expect((await f.request('PATCH', '/question-1', { action: 'cancel', messageId }))!.status).toBe(409);
+    expect((await f.request('PATCH', '/question-1', { action: 'keep-waiting', messageId }))!.status).toBe(409);
+    f.calls[0].activity(); f.calls[0].complete('Late cancelled answer'); await settle();
+    expect(f.calls[1].signal.aborted).toBe(false);
+    expect(f.store.snapshot().threads[0].messages).toHaveLength(2);
+    expect(f.store.snapshot().threads[0].activity).toEqual({ startedAt: start + 20 * 60_000 });
+    f.calls[1].complete('New answer'); await settle();
+    expect(f.store.snapshot().threads[0].status).toBe('answered');
     f.store.dispose();
   });
 

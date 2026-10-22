@@ -12,6 +12,7 @@ export interface DiscussionParent {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STARTUP_TIMEOUT_MS = 2 * 60_000;
 const INSTRUCTIONS = 'You are answering a Plannotator code-review discussion in a fork of the original conversation. Answer the question; do not implement changes, modify files, submit feedback, or contact external services. Read code if needed. Only your final answer will be published. Requests for modifications are collected separately for the original agent after final review submission.';
 
 /** Never pick the most recent session: it can belong to another review. */
@@ -59,7 +60,7 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
     return id;
   };
   return {
-    async answer(prompt, signal) {
+    async answer(prompt, signal, onActivity) {
       if (disposed) throw new Error('Discussion is closed');
       if (active) throw new Error('An answer is already running');
       signal.throwIfAborted();
@@ -67,17 +68,17 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
       const controller = active;
       const abort = () => controller.abort(signal.reason);
       signal.addEventListener('abort', abort, { once: true });
-      const timer = setTimeout(() => controller.abort(new Error('Answer timed out after 15 minutes')), 15 * 60_000);
-      timer.unref?.();
       try {
         const text = parent.provider === 'codex'
-          ? await codexAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath)
-          : await claudeAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath);
+          ? await codexAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity)
+          : await claudeAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity);
         controller.signal.throwIfAborted();
         if (!sessionId || !text.trim()) throw new Error('Agent completed without a final answer');
         return { sessionId, text };
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        throw error;
       } finally {
-        clearTimeout(timer);
         signal.removeEventListener('abort', abort);
         active = null;
       }
@@ -90,15 +91,17 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
 }
 
 async function codexAnswer(parent: DiscussionParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
-  remember: (id: unknown) => string, executable = 'codex'): Promise<string> {
+  remember: (id: unknown) => string, executable = 'codex', onActivity?: () => void): Promise<string> {
   const proc = new CodexAppServerProcess();
   const abort = () => proc.kill();
   signal.addEventListener('abort', abort, { once: true });
   try {
-    await proc.start(executable, parent.cwd, undefined,
+    await proc.start(executable, parent.cwd, STARTUP_TIMEOUT_MS,
       ['hooks', 'apps', 'plugins', 'multi_agent'].flatMap(feature => ['-c', `features.${feature}=false`]));
     signal.throwIfAborted();
-    const { config } = await proc.sendAndWait({ method: 'config/read', params: { cwd: parent.cwd } });
+    onActivity?.();
+    const { config } = await proc.sendAndWait({ method: 'config/read', params: { cwd: parent.cwd } }, STARTUP_TIMEOUT_MS);
+    onActivity?.();
     const servers = (config as RpcMessage)?.mcp_servers as RpcMessage | undefined;
     const overrides = { mcp_servers: Object.fromEntries(Object.entries(servers ?? {})
       .map(([name]) => [name, { enabled: false }])) };
@@ -106,14 +109,18 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
       method: sessionId ? 'thread/resume' : 'thread/fork',
       params: { threadId: sessionId ?? parent.sessionId, cwd: parent.cwd, sandbox: 'read-only', approvalPolicy: 'never',
         config: overrides, excludeTurns: true },
-    });
+    }, STARTUP_TIMEOUT_MS);
     const id = remember((result.thread as RpcMessage)?.id);
+    onActivity?.();
     signal.throwIfAborted();
     return await new Promise<string>((resolve, reject) => {
       let finalText = '';
       let lastLegacyText = '';
       let turnId: string | undefined;
+      let finished = false;
       const finish = (error?: Error) => {
+        if (finished) return;
+        finished = true;
         unsubscribe();
         unrequest();
         signal.removeEventListener('abort', cancelled);
@@ -123,6 +130,7 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
       const unsubscribe = proc.onEvent(({ method, params }) => {
         if (params.threadId && params.threadId !== id) return;
         if (turnId && params.turnId && params.turnId !== turnId) return;
+        if (method.startsWith('item/') || method.startsWith('turn/') || (method === 'error' && params.willRetry === true)) onActivity?.();
         if (method === 'item/completed') {
           const item = params.item as RpcMessage;
           if (item?.type === 'agentMessage' && typeof item.text === 'string') {
@@ -133,7 +141,7 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
           const turn = params.turn as RpcMessage;
           if (turnId && turn?.id !== turnId) return;
           finish(turn?.status === 'completed' ? undefined : new Error((turn?.error as RpcMessage)?.message as string || 'Agent turn did not complete'));
-        } else if (method === 'process_exited') finish(new Error('Codex exited before answering'));
+        } else if (method === 'process_exited') finish(new Error(typeof params.message === 'string' ? params.message : 'Codex exited before answering'));
         else if (method === 'error' && params.willRetry !== true) finish(new Error((params.error as RpcMessage)?.message as string || 'Codex failed'));
       });
       const unrequest = proc.onRequest((method, requestId) => {
@@ -143,8 +151,8 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
       });
       signal.addEventListener('abort', cancelled, { once: true });
       proc.sendAndWait({ method: 'turn/start', params: { threadId: id, approvalPolicy: 'never',
-        sandboxPolicy: { type: 'readOnly', networkAccess: false }, input: [{ type: 'text', text: prompt, text_elements: [] }] } })
-        .then(result => { turnId = (result.turn as RpcMessage)?.id as string; }, error => finish(error));
+        sandboxPolicy: { type: 'readOnly', networkAccess: false }, input: [{ type: 'text', text: prompt, text_elements: [] }] } }, STARTUP_TIMEOUT_MS)
+        .then(result => { turnId = (result.turn as RpcMessage)?.id as string; if (!finished) onActivity?.(); }, error => finish(error));
     });
   } finally {
     signal.removeEventListener('abort', abort);
@@ -153,8 +161,8 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
 }
 
 async function claudeAnswer(parent: DiscussionParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
-  remember: (id: unknown) => string, executable = 'claude'): Promise<string> {
-  const args = ['--print', '--verbose', '--output-format', 'stream-json', '--resume', sessionId ?? parent.sessionId,
+  remember: (id: unknown) => string, executable = 'claude', onActivity?: () => void): Promise<string> {
+  const args = ['--print', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--resume', sessionId ?? parent.sessionId,
     ...(!sessionId ? ['--fork-session'] : []), '--tools', 'Read,Glob,Grep', '--allowedTools', 'Read,Glob,Grep',
     '--permission-mode', 'dontAsk', '--setting-sources', '', '--settings', '{"disableAllHooks":true}',
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands'];
@@ -166,11 +174,13 @@ async function claudeAnswer(parent: DiscussionParent, sessionId: string | undefi
     let answer: string | undefined;
     let failure: Error | undefined;
     const kill = () => { if (!killWindowsProcessTree(child.pid)) child.kill('SIGKILL'); };
-    const fail = (error: Error) => { failure = error; kill(); };
+    const fail = (error: Error) => { failure ??= error; kill(); };
+    const startupTimer = setTimeout(() => fail(new Error('Claude did not initialize its discussion session within 2 minutes')), STARTUP_TIMEOUT_MS);
+    startupTimer.unref?.();
     const abort = () => fail(new Error('Answer cancelled'));
     signal.addEventListener('abort', abort, { once: true });
     guardChildStreams(child, 'Claude discussion', fail);
-    child.on('error', error => { signal.removeEventListener('abort', abort); reject(error); });
+    child.on('error', error => { clearTimeout(startupTimer); signal.removeEventListener('abort', abort); reject(error); });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       buffer += chunk;
@@ -182,7 +192,8 @@ async function claudeAnswer(parent: DiscussionParent, sessionId: string | undefi
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
-          if (event.type === 'system' && event.subtype === 'init') remember(event.session_id);
+          if (event.type === 'system' && event.subtype === 'init') { remember(event.session_id); clearTimeout(startupTimer); }
+          if (['system', 'assistant', 'user', 'stream_event', 'result'].includes(event.type)) onActivity?.();
           if (event.type === 'result') {
             remember(event.session_id);
             if (event.is_error || event.subtype !== 'success') throw new Error(event.errors?.join('\n') || 'Claude did not complete its answer');
@@ -192,6 +203,7 @@ async function claudeAnswer(parent: DiscussionParent, sessionId: string | undefi
       }
     });
     child.on('close', code => {
+      clearTimeout(startupTimer);
       signal.removeEventListener('abort', abort);
       if (failure) reject(failure);
       else if (code !== 0) reject(new Error(`Claude exited with status ${code}; check CLI authentication and session availability`));

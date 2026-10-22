@@ -159,6 +159,30 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
   });
 
+  test('poll recovery clears a connection notice but preserves a failed question error', async () => {
+    let online = false;
+    let poll: () => void = () => {};
+    await render(async (_url, options) => {
+      if (options) throw new Error('Lost send response');
+      poll();
+      if (!online) throw new Error('Connection lost');
+      return Response.json({ supported: true, available: true, threads: [] });
+    });
+    expect(discussions.disconnected).toBe(true);
+    expect(discussions.error).toBeTruthy();
+    online = true;
+    await act(async () => { await new Promise<void>(resolve => { poll = resolve; }); });
+    expect(discussions.disconnected).toBe(false);
+    expect(discussions.error).toBeUndefined();
+    await act(async () => { expect(await discussions.create(anchor, 'Retry this question')).toBe(false); });
+    const error = discussions.error;
+    expect(error).toBeTruthy();
+    await act(async () => { await new Promise<void>(resolve => { poll = resolve; }); });
+    expect(discussions.disconnected).toBe(false);
+    expect(discussions.error).toBe(error);
+    expect(Object.values(discussions.failedQuestions).map(question => question.text)).toEqual(['Retry this question']);
+  });
+
   test('a later successful question does not discard a different failed question', async () => {
     await render(async (_url, options) => {
       if (!options) return Response.json({ supported: true, available: true, threads: [] });

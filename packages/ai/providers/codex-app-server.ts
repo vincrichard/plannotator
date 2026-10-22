@@ -418,7 +418,7 @@ export class CodexAppServerProcess {
     for (const [, pending] of this.pendingRequests) pending.reject(error);
     this.pendingRequests.clear();
     for (const listener of this.listeners) {
-      listener({ method: "process_exited", params: {} });
+      listener({ method: "process_exited", params: { message: error.message } });
     }
   }
 

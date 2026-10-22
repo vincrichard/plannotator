@@ -66,7 +66,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      try { await refresh(); } catch (cause) { if (!cancelled) setError(String(cause instanceof Error ? cause.message : cause)); }
+      try { await refresh(); } catch { if (!cancelled) setDisconnected(true); }
       if (!cancelled && !endedRef.current) timer = setTimeout(poll, 1000);
     };
     void poll();
@@ -117,9 +117,10 @@ export function useReviewDiscussionState(snapshotId?: string) {
     await request(`/${encodeURIComponent(id)}/messages`, 'POST', message);
     pendingMessages.current.delete(id);
   }, [request]);
-  const update = useCallback(async (id: string, action: 'resolve' | 'reopen' | 'convert', text?: string) => {
-    return request(`/${encodeURIComponent(id)}`, 'PATCH', { action, text });
-  }, [request]);
+  const update = useCallback(async (id: string, action: 'resolve' | 'reopen' | 'convert' | 'keep-waiting' | 'cancel', text?: string) => {
+    const messageId = action === 'keep-waiting' || action === 'cancel' ? state.threads.find(thread => thread.id === id)?.messages.at(-1)?.id : undefined;
+    return request(`/${encodeURIComponent(id)}`, 'PATCH', { action, text, messageId });
+  }, [request, state.threads]);
   const setDraft = useCallback((id: string, text: string) => setDrafts(previous => {
     const next = { ...previous, [id]: text };
     try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Keep the in-memory draft when storage is unavailable. */ }
@@ -129,7 +130,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
   const markers = useMemo<CodeAnnotation[]>(() => state.threads.filter(thread => thread.status !== 'converted' && thread.status !== 'resolved' && (thread.anchor.scope ?? 'line') === 'line' && thread.snapshotId === snapshotId).map(thread => ({
     ...thread.anchor, id: markerPrefix + thread.id, type: 'comment', text: `${thread.status}:${thread.updatedAt}`, createdAt: thread.createdAt,
   })), [state.threads, snapshotId]);
-  return { ...state, snapshotId, markers, error, ended, disconnected, connectionError: ended ? endedMessage : disconnected ? disconnectedMessage : undefined, failedQuestions, create, send, update, drafts, setDraft, seen, markRead, expandedThreads, setThreadExpanded };
+  return { ...state, snapshotId, markers, error: error ?? (disconnected ? disconnectedMessage : undefined), ended, disconnected, connectionError: ended ? endedMessage : disconnected ? disconnectedMessage : undefined, failedQuestions, create, send, update, drafts, setDraft, seen, markRead, expandedThreads, setThreadExpanded };
 }
 export type ReviewDiscussions = ReturnType<typeof useReviewDiscussionState> & {
   conversionReady: boolean;

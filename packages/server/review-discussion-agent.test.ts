@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { afterEach, expect, test, spyOn } from 'bun:test';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDiscussionAgent, discoverDiscussionParent } from './review-discussion-agent';
@@ -96,4 +96,90 @@ for(const event of [
   expect(next).not.toContain('--fork-session'); expect(next).toContain(forkId);
   expect(first[first.indexOf('--tools') + 1]).toBe('Read,Glob,Grep');
   expect(first).toContain('--strict-mcp-config'); expect(first).toContain('{"disableAllHooks":true}');
+});
+
+// Shorten host limits while the fixture processes use real pipes and timers.
+const realSetTimeout = globalThis.setTimeout;
+function shortTimeouts() {
+  return spyOn(globalThis, 'setTimeout').mockImplementation(((callback: TimerHandler, ms?: number, ...args: unknown[]) =>
+    realSetTimeout(callback, ms === 120_000 ? 1000 : ms === 900_000 ? 100 : ms === 30_000 ? 30 : ms, ...args)) as typeof setTimeout);
+}
+async function until(check: () => boolean) {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await new Promise(resolve => realSetTimeout(resolve, 10));
+  }
+  throw new Error('Fixture did not reach the expected state');
+}
+
+test('slow startup and answers beyond fifteen minutes survive until a final answer', async () => {
+  const fixture = fake(rpc(`
+    send({method:'item/reasoning/textDelta',params:{threadId:'${forkId}',delta:'private'}});
+    const timer=setInterval(()=>{if(!fs.existsSync('finish'))return;clearInterval(timer);
+      send({method:'item/completed',params:{item:{type:'agentMessage',phase:'final_answer',text:'Late final'}}});
+      send({method:'turn/completed',params:{turn:{id:'t',status:'completed'}}});
+    },10);`).replace(`reply({thread:{id:'${forkId}'}})`, `{
+      const timer=setInterval(()=>{if(!fs.existsSync('fork'))return;clearInterval(timer);reply({thread:{id:'${forkId}'}})},10);
+    }`));
+  const agent = createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  let activity = 0;
+  let result: { text: string } | undefined, error: unknown;
+  const timers = shortTimeouts();
+  try {
+    const answer = agent.answer('why?', new AbortController().signal, () => { activity++; }).then(value => { result = value; }, cause => { error = cause; });
+    await until(() => existsSync(join(fixture.cwd, 'calls.jsonl')) && readFileSync(join(fixture.cwd, 'calls.jsonl'), 'utf8').includes('thread/fork'));
+    await new Promise(resolve => realSetTimeout(resolve, 60));
+    await Promise.resolve();
+    expect(error).toBeUndefined();
+    writeFileSync(join(fixture.cwd, 'fork'), '');
+    await until(() => activity >= 5);
+    await new Promise(resolve => realSetTimeout(resolve, 150));
+    await Promise.resolve();
+    expect(error).toBeUndefined(); expect(result).toBeUndefined();
+    writeFileSync(join(fixture.cwd, 'finish'), '');
+    await answer;
+    expect(error).toBeUndefined(); expect(result?.text).toBe('Late final');
+  } finally { agent.dispose(); timers.mockRestore(); }
+});
+
+for (const provider of ['codex', 'claude'] as const) test(`${provider} startup remains bounded and reports startup failure`, async () => {
+  const fixture = fake("require('node:fs').writeFileSync('started','');process.stdin.resume();setInterval(()=>{},1000);");
+  const agent = createDiscussionAgent({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const timers = shortTimeouts();
+  try {
+    const answer = agent.answer('why?', new AbortController().signal).catch(error => error);
+    await until(() => existsSync(join(fixture.cwd, 'started')));
+    const error = await answer;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain(provider === 'codex' ? 'initialize' : 'initialize its discussion session');
+  } finally { agent.dispose(); timers.mockRestore(); }
+});
+
+test('Claude partial activity is private, survives long answers and preserves cancellation reasons', async () => {
+  const fixture = fake(`process.stdin.resume(); process.stdin.on('end',()=>{
+    for(const event of [{type:'system',subtype:'init',session_id:'${forkId}'},
+      {type:'stream_event',event:{type:'content_block_delta',delta:{text:'private'}}}])
+      process.stdout.write(JSON.stringify(event)+'\\n');
+    setInterval(()=>{},1000);
+  });`);
+  const agent = createDiscussionAgent({ provider: 'claude', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const controller = new AbortController(); let activity = 0; let error: Error | undefined;
+  const timers = shortTimeouts();
+  try {
+    const answer = agent.answer('why?', controller.signal, () => { activity++; }).catch(cause => { error = cause; });
+    await until(() => activity === 2);
+    await new Promise(resolve => realSetTimeout(resolve, 150));
+    await Promise.resolve(); expect(error).toBeUndefined();
+    controller.abort(new Error('Reviewer cancelled this answer'));
+    await answer;
+    expect(error?.message).toBe('Reviewer cancelled this answer');
+  } finally { agent.dispose(); timers.mockRestore(); }
+});
+
+for (const provider of ['codex', 'claude'] as const) test(`${provider} process exit is reported separately from timeout or cancellation`, async () => {
+  const fixture = fake(provider === 'codex' ? rpc('process.exit(17);') : 'process.exit(17);');
+  const agent = createDiscussionAgent({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
+  try {
+    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('exited');
+  } finally { agent.dispose(); }
 });

@@ -1,7 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { ReviewDiscussion } from '../../core/review-discussions';
 import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import { renderInlineMarkdown } from '../utils/renderInlineMarkdown';
+
+const elapsed = (ms: number) => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
 
 export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion }) {
   const discussions = useReviewDiscussions()!;
@@ -9,6 +14,17 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [converting, setConverting] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  const answering = thread.status === 'answering';
+  useEffect(() => {
+    if (!answering) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [answering]);
+  const activity = thread.activity;
+  const startedAt = activity?.startedAt ?? thread.updatedAt;
+  const quiet = answering && !discussions.disconnected && now - Math.max(startedAt, activity?.lastActivityAt ?? 0, activity?.waitRequestedAt ?? 0) >= 3 * 60_000;
   const draft = discussions.drafts[thread.id] ?? '';
   const readonly = thread.snapshotId !== discussions.snapshotId;
   const busy = pending || thread.status === 'answering' || discussions.ended;
@@ -29,7 +45,7 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   return <section className="review-comment" data-discussion-id={thread.id}>
     <button className="w-full text-left text-xs flex items-center gap-2" aria-expanded={expanded} onClick={() => { discussions.setThreadExpanded(thread.id, !expanded); discussions.markRead(thread); }}>
       <span className="font-medium">Discussion</span>
-      <span className="text-muted-foreground">{thread.status === 'answering' ? 'Answering…' : thread.status === 'answered' ? awaitingReply ? 'Awaiting your reply' : 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
+      <span className="text-muted-foreground">{answering ? discussions.disconnected ? 'Connection lost' : quiet ? 'No activity received' : 'Answering…' : thread.status === 'answered' ? awaitingReply ? 'Awaiting your reply' : 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
       {unread && <span className="text-primary">Unread</span>}
       <span className="truncate ml-auto">{latestQuestion?.text}</span>
     </button>
@@ -39,6 +55,15 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
         <div className="mt-3 space-y-3">{thread.messages.slice(0, latestQuestionIndex).map(renderMessage)}</div>
       </details>}
       {thread.messages.slice(latestQuestionIndex).map(renderMessage)}
+      {answering && !discussions.ended && <div className="space-y-2 text-xs text-muted-foreground">
+        <p>Elapsed: {elapsed(now - startedAt)} · {activity?.lastActivityAt ? `Last activity: ${elapsed(now - activity.lastActivityAt)} ago` : 'Waiting for first activity'}</p>
+        {quiet && <p role="status">No activity received for at least 3 minutes. The agent may still be working. Waiting continues until you cancel or the agent finishes.</p>}
+        <div className="flex flex-wrap gap-2">
+          {quiet && <button className="review-toolbar-btn" disabled={pending} onClick={() => void run(() => discussions.update(thread.id, 'keep-waiting'))}>Keep waiting</button>}
+          <button className="review-toolbar-btn" disabled={pending || discussions.disconnected} onClick={() => void run(() => discussions.update(thread.id, 'cancel'))}>Cancel answer</button>
+        </div>
+      </div>}
+      {discussions.connectionError && !discussions.ended && <p role="alert" className="text-xs text-destructive">{discussions.connectionError}</p>}
       {(discussions.ended || error || thread.error) && <p role="alert" className="text-xs text-destructive">{discussions.ended ? discussions.error : error ?? thread.error}</p>}
       {!discussions.conversionReady && <p className="text-xs text-muted-foreground">{discussions.conversionUnavailableReason}</p>}
       {readonly && <p className="text-xs text-muted-foreground">This discussion belongs to another review snapshot.</p>}

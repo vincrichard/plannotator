@@ -46,6 +46,7 @@ export interface ReviewDiscussion {
   messages: ReviewDiscussionMessage[];
   status: 'answering' | 'answered' | 'error' | 'resolved' | 'converted';
   error?: string;
+  activity?: { startedAt: number; lastActivityAt?: number; waitRequestedAt?: number };
   createdAt: number;
   updatedAt: number;
   annotation?: ReviewDiscussionComment;

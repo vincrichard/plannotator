@@ -576,3 +576,53 @@ test.describe('last-line touch comments', () => {
     } finally { await session.close(); }
   });
 });
+
+
+test('quiet answers keep waiting, finish late or cancel without losing the question', async ({ page }, testInfo) => {
+  const session = await review(page);
+  try {
+    await askOnLine(page, 'Why is this still running?');
+    await expect.poll(async () => (await snapshot(page)).threads[0]?.activity?.lastActivityAt).toBeTruthy();
+    const first = (await snapshot(page)).threads[0];
+    const thread = page.locator(`[data-discussion-id="${first.id}"]`).first();
+    await expandThread(thread);
+    await page.clock.setFixedTime(Date.now() + 20 * 60_000);
+    await expect(thread.getByRole('button', { name: 'Keep waiting', exact: true })).toBeVisible();
+    expect((await snapshot(page)).threads[0].status).toBe('answering');
+    expect(await thread.textContent()).not.toContain('PRIVATE_');
+    await page.screenshot({ path: join(proofDir, `quiet-answer-${testInfo.project.name}.png`) });
+    await thread.getByRole('button', { name: 'Keep waiting', exact: true }).click();
+    await expect.poll(async () => (await snapshot(page)).threads[0]?.activity?.waitRequestedAt).toBeTruthy();
+    const waiting = (await snapshot(page)).threads[0];
+    expect(waiting.activity.lastActivityAt).toBe(first.activity.lastActivityAt);
+    expect(session.requests().filter(r => r.method === 'thread/fork')).toHaveLength(1);
+    await page.clock.setFixedTime(Date.now());
+    await expect(thread.getByRole('button', { name: 'Keep waiting', exact: true })).toHaveCount(0);
+    await page.clock.setFixedTime(Date.now() + 20 * 60_000);
+    await expect(thread.getByRole('button', { name: 'Keep waiting', exact: true })).toBeVisible();
+    session.release();
+    await expect(thread.getByText('Completed answer for this discussion.', { exact: true })).toBeVisible();
+    expect(await thread.textContent()).not.toContain('PRIVATE_');
+    await expect(thread.getByRole('button', { name: 'Cancel answer', exact: true })).toHaveCount(0);
+  } finally { await session.close(); }
+
+  // A separate held answer proves cancellation, rather than racing a completed result.
+  await page.clock.setFixedTime(Date.now());
+  const cancelled = await review(page);
+  try {
+    await askOnLine(page, 'Please explain the guard');
+    await expect.poll(async () => (await snapshot(page)).threads[0]?.activity?.lastActivityAt).toBeTruthy();
+    const first = (await snapshot(page)).threads[0];
+    const thread = page.locator(`[data-discussion-id="${first.id}"]`).first();
+    await expandThread(thread);
+    await thread.getByRole('button', { name: 'Cancel answer', exact: true }).click();
+    await expect(thread.getByRole('alert')).toContainText('cancelled');
+    expect((await snapshot(page)).threads[0].messages).toHaveLength(1);
+    await thread.getByRole('textbox', { name: 'Follow-up question', exact: true }).fill('Explain further');
+    await thread.getByRole('button', { name: 'Send question', exact: true }).click();
+    await expect.poll(() => cancelled.requests().filter(r => r.method === 'thread/resume').length).toBe(1);
+    cancelled.release();
+    await expect(thread.getByText('Completed follow-up answer.', { exact: true })).toBeVisible();
+    expect((await snapshot(page)).threads[0].messages).toHaveLength(3);
+  } finally { await cancelled.close(); }
+});

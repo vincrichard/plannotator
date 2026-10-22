@@ -5,7 +5,7 @@ import { validateAnnotationPatch } from './external-annotation';
 import { callFlowInstallOriginAllowed } from './call-flow-install';
 
 export interface DiscussionAgent {
-  answer(prompt: string, signal: AbortSignal): Promise<{ sessionId: string; text: string }>;
+  answer(prompt: string, signal: AbortSignal, onActivity?: () => void): Promise<{ sessionId: string; text: string }>;
   dispose(): void;
 }
 interface StoredThread extends ReviewDiscussion { forkId?: string; context: string; cwd: string }
@@ -77,11 +77,13 @@ export function createReviewDiscussions(options: Options) {
   const cancel = (id: string) => {
     const job = running.get(id);
     running.delete(id);
-    job?.controller.abort();
+    job?.controller.abort(new Error('Answer cancelled'));
     job?.agent.dispose();
   };
   const run = (thread: StoredThread, question: string) => {
     const controller = new AbortController();
+    thread.activity = { startedAt: Date.now() };
+    version++;
     let agent: DiscussionAgent;
     try { agent = options.createAgent({ cwd: thread.cwd, sessionId: thread.forkId, onSessionId(id) {
       if (controller.signal.aborted) return;
@@ -99,7 +101,14 @@ export function createReviewDiscussions(options: Options) {
       ? `Continue the same discussion at ${thread.anchor.filePath || '(whole review)'}:${thread.anchor.lineStart}-${thread.anchor.lineEnd} (${thread.anchor.side}), snapshot ${thread.snapshotId}. Use the reviewed code captured earlier; working files may have changed.`
       : thread.context;
     const prompt = `${context}\n\nReviewer question:\n${question}\n\nAnswer this question only. Do not edit files, run modifications, submit or approve a review, or start another agent. This is a discussion fork; the parent agent receives change requests only on final review submission. Return a self-contained final answer; internal reasoning and intermediate messages are not displayed.`;
-    void agent.answer(prompt, controller.signal).then(({ sessionId, text: answer }) => {
+    void agent.answer(prompt, controller.signal, () => {
+      if (controller.signal.aborted || stopped) return;
+      const now = Date.now();
+      // Polling needs timestamps, not streamed content or a disk write per token.
+      if (thread.activity!.lastActivityAt && now - thread.activity!.lastActivityAt < 1000) return;
+      thread.activity = { ...thread.activity!, lastActivityAt: now };
+      version++;
+    }).then(({ sessionId, text: answer }) => {
       if (controller.signal.aborted || stopped) return;
       if (!text(answer, 200_000)) throw new Error('The agent returned no final answer.');
       thread.forkId = sessionId;
@@ -206,7 +215,20 @@ export function createReviewDiscussions(options: Options) {
           persist();
           run(thread, body.text);
         } else if (!match![2] && req.method === 'PATCH') {
-          if (!['resolve', 'reopen', 'convert'].includes(String(body.action))) return fail('Unknown discussion action');
+          if (!['resolve', 'reopen', 'convert', 'keep-waiting', 'cancel'].includes(String(body.action))) return fail('Unknown discussion action');
+          if (body.action === 'keep-waiting' || body.action === 'cancel') {
+            if (thread.status !== 'answering' || body.messageId !== thread.messages.at(-1)?.id) return fail('This answer is no longer running. Refresh the discussion.', 409);
+            if (body.action === 'keep-waiting') {
+              thread.activity = { ...thread.activity!, waitRequestedAt: Date.now() };
+            } else {
+              thread.status = 'error';
+              thread.error = 'Answer cancelled. Send a follow-up to continue this discussion.';
+              thread.updatedAt = Date.now();
+            }
+            persist();
+            if (body.action === 'cancel') cancel(thread.id);
+            return Response.json({ thread: snapshot().threads.find(t => t.id === thread.id) });
+          }
           if (thread.status === 'converted') {
             if (body.action !== 'convert') return fail('This discussion was converted to a review comment.', 409);
             return Response.json({ thread: snapshot().threads.find(t => t.id === thread.id), annotation: thread.annotation });
