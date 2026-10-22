@@ -97,6 +97,7 @@ function makeFetch(origin: string, agentTool: Record<string, unknown> | undefine
     const url = new URL(rawUrl, "http://localhost");
     if (url.pathname === "/api/diff") return Response.json(diffPayload(origin, agentTool));
     if (url.pathname === "/api/diff/fresh") return Response.json({ fresh: true });
+    if (url.pathname === "/api/review-discussions") return Response.json({ supported: false, available: false, snapshotId: "", version: 0, threads: [] });
     if (url.pathname === "/api/config" && init?.method === "POST") {
       configPosts.push(JSON.parse(String(init.body)));
       return Response.json({ ok: true });

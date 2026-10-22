@@ -125,6 +125,7 @@
     "./inbox/connection": "./inbox/connection.ts",
     "./inbox/tailnet": "./inbox/tailnet.ts",
     "./inbox/agent-link": "./inbox/agent-link.ts",
+    "./read-only-fork": "./read-only-fork.ts",
     "./review-discussions": "./review-discussions.ts"
   },
   "dependencies": {

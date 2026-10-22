@@ -107,16 +107,26 @@ export function useReviewDiscussionState(snapshotId?: string) {
       return false;
     }
   }, [snapshotId, request, setThreadExpanded, failedQuestions, saveFailedQuestions]);
-  const pendingMessages = useRef(new Map<string, { id: string; text: string }>());
+  const pendingMessages = useMemo(() => {
+    try { return new Map<string, { id: string; text: string }>(JSON.parse(sessionStorage.getItem(storageKey + ':messages') ?? '[]')); }
+    catch { return new Map<string, { id: string; text: string }>(); }
+  }, [storageKey]);
   const send = useCallback(async (id: string, text: string) => {
-    let message = pendingMessages.current.get(id);
-    if (!message || message.text !== text) {
+    const persist = () => {
+      try { sessionStorage.setItem(storageKey + ':messages', JSON.stringify([...pendingMessages])); } catch { /* Keep the in-memory retry identity. */ }
+    };
+    let message = pendingMessages.get(id);
+    if (!message || typeof message.id !== 'string' || message.text !== text) {
       message = { id: crypto.randomUUID(), text };
-      pendingMessages.current.set(id, message);
+      pendingMessages.set(id, message);
     }
+    persist();
     await request(`/${encodeURIComponent(id)}/messages`, 'POST', message);
-    pendingMessages.current.delete(id);
-  }, [request]);
+    if (pendingMessages.get(id) === message) {
+      pendingMessages.delete(id);
+      persist();
+    }
+  }, [request, pendingMessages, storageKey]);
   const update = useCallback(async (id: string, action: 'resolve' | 'reopen' | 'convert' | 'keep-waiting' | 'cancel', text?: string) => {
     const messageId = action === 'keep-waiting' || action === 'cancel' ? state.threads.find(thread => thread.id === id)?.messages.at(-1)?.id : undefined;
     return request(`/${encodeURIComponent(id)}`, 'PATCH', { action, text, messageId });

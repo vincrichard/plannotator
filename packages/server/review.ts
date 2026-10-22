@@ -15,10 +15,11 @@ import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buil
 import { createRequestHostGuard } from "./request-host-guard";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, getVcsFileBytesForDiff, getVcsDiffFingerprint, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, detectRemoteDefaultCompareTarget, resolveAvailableDiffType, vcsOwnsDiffType, vcsSupportsSnapshot, materializeVcsSnapshot, gitRuntime } from "./vcs";
+import { createReviewTurnPins } from "@plannotator/shared/review-turn";
 import { basename, join } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { createReviewDiscussions } from "@plannotator/shared/review-discussions";
-import { createDiscussionAgent, discoverDiscussionParent } from "./review-discussion-agent";
+import { createReadOnlyFork, discoverForkParent } from "./read-only-fork";
 import { existsSync } from "node:fs";
 import { SingleFlight } from "@plannotator/shared/single-flight";
 import {
@@ -389,6 +390,7 @@ export async function startReviewServer(
   const hasLocalAccess = !!gitContext;
   const sessionVcsType = gitContext?.vcsType;
   let clientGitContext = gitContext;
+  const turnPins = createReviewTurnPins();
   let draftKey = contentHash(options.rawPatch);
   const editorAnnotations = createEditorAnnotationHandler();
   const externalAnnotations = createExternalAnnotationHandler("review");
@@ -1332,7 +1334,7 @@ export async function startReviewServer(
   };
 
   const isRemote = isRemoteSession();
-  const discussionParent = discoverDiscussionParent(process.env, resolveAgentCwd());
+  const discussionParent = discoverForkParent(process.env, resolveAgentCwd());
   const guideParent = !isRemote && !options.tailnetPublished ? discussionParent : null;
   const agentJobs = createAgentJobHandler({
     guideForkProvider: guideParent?.provider,
@@ -2039,9 +2041,14 @@ export async function startReviewServer(
       : !discussionParent ? 'Launch this review from a Codex or Claude session to ask its fork.' : undefined,
     getContext: () => ({ snapshotId: currentSnapshotId(), patch: currentPatch, description: buildCurrentAiReviewContext() ?? `Repository: ${resolveAgentCwd()}\nReview mode: ${currentDiffType}\nBase: ${currentBase}`, cwd: resolveAgentCwd() }),
     isDecided: () => reviewDecided,
-    createAgent: ({ cwd, ...agentOptions }) => createDiscussionAgent({ ...discussionParent!, cwd }, agentOptions),
+    createAgent: ({ cwd, ...agentOptions }) => createReadOnlyFork({ ...discussionParent!, cwd }, {
+      ...agentOptions,
+      instructions: 'You are answering a Plannotator code-review discussion in a fork of the original conversation. Answer the question; do not implement changes, modify files, submit feedback, or contact external services. Read code if needed. Only your final answer will be published. Requests for modifications are collected separately for the original agent after final review submission.',
+    }),
   });
   const requestHostGuard = createRequestHostGuard();
+  try { turnPins.retain(gitContext); }
+  catch (error) { turnPins.dispose(); throw error; }
   const server = await startBunServerOnAvailablePort((port) =>
     Bun.serve({
         hostname: getServerHostname(),
@@ -2867,7 +2874,9 @@ export async function startReviewServer(
               if (!updatedContext && gitContext && !isSameCwdCommitSwitch(previousDiffType as string, newDiffType as string)) {
                 try {
                   const effectiveCwd = resolveVcsCwd(newDiffType as DiffType, gitContext.cwd);
-                  updatedContext = await getVcsContext(effectiveCwd, sessionVcsType);
+                  const context = await getVcsContext(effectiveCwd, sessionVcsType);
+                  turnPins.retain(context);
+                  updatedContext = context;
                   updatedContextRevision = getGitButlerContextRevision(updatedContext) ?? "";
                 } catch {
                   /* best-effort */
@@ -4265,7 +4274,7 @@ export async function startReviewServer(
           );
         },
     }),
-  );
+  ).catch(error => { turnPins.dispose(); throw error; });
 
   const port = server.port!;
   boundPort = port;
@@ -4281,6 +4290,7 @@ export async function startReviewServer(
     callFlowService.cancelAll();
     aiRuntime?.dispose();
     server.stop();
+    turnPins.dispose();
     // Invoke cleanup callback (e.g., remove temp worktree)
     if (options.onCleanup) {
       try {

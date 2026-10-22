@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, realpath, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import type { GitContext } from './review-core';
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -37,12 +38,60 @@ async function location(cwd: string, session: string) {
   // Linked worktrees share refs, but must not share turn snapshots.
   const key = createHash('sha256').update(`${root}\0${session}`).digest('hex');
   const prefix = `refs/plannotator/turns/${key}`;
-  return { root, before: `${prefix}/before`, latest: `${prefix}/latest`, stopped: `${prefix}/stopped` };
+  return { root, before: `${prefix}/before`, latest: `${prefix}/latest`, stopped: `${prefix}/stopped`,
+    previous: `${prefix}/previous`, legacy: `${prefix}/legacy`, bounded: `${prefix}/bounded` };
 }
 
 export async function readReviewTurn(cwd: string, session: string): Promise<string | null> {
   const loc = await location(cwd, session);
   return loc ? ref(loc.root, `${loc.latest}^{commit}`) : null;
+}
+
+/** Keep every advertised turn readable until this review closes, even after Git GC. */
+export function createReviewTurnPins() {
+  // shortcut: abrupt process death can leave pins; add lease cleanup if stale pins accumulate.
+  const prefix = `refs/plannotator/reviews/${randomUUID()}`;
+  const refs = new Map<string, Set<string>>();
+  let disposed = false;
+  const dispose = () => {
+    disposed = true;
+    process.removeListener('exit', dispose);
+    for (const [cwd, names] of refs) {
+      try {
+        execFileSync('git', ['update-ref', '--stdin'], { cwd, timeout: 20_000,
+          input: [...names].map(name => `delete ${name}`).join('\n') + '\n', stdio: ['pipe', 'ignore', 'ignore'] });
+      } catch { /* Retaining an owned pin is safer than deleting another review's ref. */ }
+    }
+    refs.clear();
+  };
+  return {
+    retain(context: GitContext | undefined) {
+      if (disposed || !context || (context.vcsType && context.vcsType !== 'git')) return;
+      const cwd = context.root ?? context.cwd;
+      if (!cwd) return;
+      for (const option of context.diffOptions) {
+        if (option.label !== 'Last turn changes') continue;
+        const sha = option.id.match(/^commit:([a-f0-9]{40}|[a-f0-9]{64})$/)?.[1];
+        if (!sha) continue;
+        const name = `${prefix}/${createHash('sha256').update(cwd).digest('hex')}/${sha}`;
+        if (refs.get(cwd)?.has(name)) continue;
+        execFileSync('git', ['update-ref', name, sha, ''], { cwd, timeout: 20_000, stdio: 'ignore' });
+        if (refs.size === 0) process.once('exit', dispose);
+        const names = refs.get(cwd) ?? new Set<string>();
+        names.add(name);
+        refs.set(cwd, names);
+      }
+    },
+    dispose,
+  };
+}
+
+async function updateRefs(cwd: string, commands: string[]) {
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile('git', ['update-ref', '--stdin'], { cwd, timeout: 20_000 }, error => error ? reject(error) : resolve());
+    child.stdin!.on('error', reject);
+    child.stdin!.end(`${commands.join('\n')}\n`);
+  });
 }
 
 async function snapshotTree(cwd: string): Promise<string> {
@@ -87,8 +136,19 @@ export async function captureReviewTurn(
     if (before) await git(loc.root, ['update-ref', '-d', loc.before, before]);
     const tree = await snapshotTree(loc.root);
     const previous = await ref(loc.root, loc.latest);
-    const sha = await commit(loc.root, tree, previous, turnId ?? `User turn ${randomUUID()}`);
-    await git(loc.root, ['update-ref', loc.before, sha, '']);
+    const sha = await commit(loc.root, tree, null, turnId ?? `User turn ${randomUUID()}`);
+    const commands = [`create ${loc.before} ${sha}`, `update ${loc.bounded} ${sha}`,
+      `verify ${loc.latest} ${previous ?? '0'.repeat(sha.length)}`];
+    // Rollback needs one prior result, not an ancestry chain of every user turn.
+    if (previous) commands.push(`update ${loc.previous} ${previous}`);
+    else if (await ref(loc.root, loc.previous)) commands.push(`delete ${loc.previous}`);
+    const stopped = await ref(loc.root, loc.stopped);
+    if (stopped) commands.push(`delete ${loc.stopped} ${stopped}`);
+    // Pre-pin review servers may still use these SHAs; preserve the old chain once on upgrade.
+    if (previous && !await ref(loc.root, loc.bounded) && !await ref(loc.root, loc.legacy)) {
+      commands.push(`create ${loc.legacy} ${previous}`);
+    }
+    await updateRefs(loc.root, commands);
     return;
   }
   if (!before) return;
@@ -104,18 +164,15 @@ export async function captureReviewTurn(
     }
   } else if (latest && await ref(loc.root, `${latest}^`) === before) {
     // A turn can be previewed mid-edit and then revert everything it changed.
-    next = await ref(loc.root, `${before}^`);
+    next = await ref(loc.root, `${before}^`) ?? await ref(loc.root, loc.previous);
   }
   // Compare-and-swap refuses an overlapping newer turn; it cannot publish this stale capture.
   const commands = [`verify ${loc.before} ${before}`];
   if (next !== latest) commands.push(next
     ? `update ${loc.latest} ${next} ${latest ?? '0'.repeat(before.length)}`
     : `delete ${loc.latest} ${latest}`);
+  else commands.push(`verify ${loc.latest} ${latest ?? '0'.repeat(before.length)}`);
   // Stop can re-enter after another hook requests more work in the same turn.
   if (phase === 'stop') commands.push(`update ${loc.stopped} ${before}`);
-  await new Promise<void>((resolve, reject) => {
-    const child = execFile('git', ['update-ref', '--stdin'], { cwd: loc.root, timeout: 20_000 }, error => error ? reject(error) : resolve());
-    child.stdin!.on('error', reject);
-    child.stdin!.end(`${commands.join('\n')}\n`);
-  });
+  await updateRefs(loc.root, commands);
 }

@@ -2,7 +2,8 @@ import { afterEach, expect, test, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDiscussionAgent, discoverDiscussionParent } from './review-discussion-agent';
+import { createReadOnlyFork, discoverForkParent } from './read-only-fork';
+const instructions = 'Inspect this task without changing files.';
 const parentId = '11111111-1111-4111-8111-111111111111';
 const forkId = '22222222-2222-4222-8222-222222222222';
 const dirs: string[] = [];
@@ -11,7 +12,7 @@ function fake(body: string) {
   const cwd = mkdtempSync(join(tmpdir(), 'discussion-agent-')); dirs.push(cwd);
   const executablePath = join(cwd, 'agent');
   writeFileSync(executablePath, '#!/usr/bin/env node\n' + body, { mode: 0o700 });
-  return { cwd, executablePath };
+  return { cwd, executablePath, instructions };
 }
 const rpc = (extra = '') => `
 const fs=require('node:fs');
@@ -34,18 +35,18 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 });`;
 
 test('parent discovery never guesses or falls back from invalid explicit identity', () => {
-  expect(discoverDiscussionParent({ CODEX_THREAD_ID: parentId }, '/repo')).toEqual({ provider: 'codex', sessionId: parentId, cwd: '/repo' });
-  expect(discoverDiscussionParent({ PLANNOTATOR_SESSION_TAG: `claude-code:${parentId}` }, '/repo')?.provider).toBe('claude');
-  expect(discoverDiscussionParent({ CODEX_SESSION_ID: parentId }, '/repo')).toBeNull();
-  expect(discoverDiscussionParent({ CODEX_THREAD_ID: parentId, PLANNOTATOR_DISCUSSION_PROVIDER: 'claude' }, '/repo')).toBeNull();
-  expect(discoverDiscussionParent({ CODEX_THREAD_ID: '--last' }, '/repo')).toBeNull();
+  expect(discoverForkParent({ CODEX_THREAD_ID: parentId }, '/repo')).toEqual({ provider: 'codex', sessionId: parentId, cwd: '/repo' });
+  expect(discoverForkParent({ PLANNOTATOR_SESSION_TAG: `claude-code:${parentId}` }, '/repo')?.provider).toBe('claude');
+  expect(discoverForkParent({ CODEX_SESSION_ID: parentId }, '/repo')).toBeNull();
+  expect(discoverForkParent({ CODEX_THREAD_ID: parentId, PLANNOTATOR_DISCUSSION_PROVIDER: 'claude' }, '/repo')).toBeNull();
+  expect(discoverForkParent({ CODEX_THREAD_ID: '--last' }, '/repo')).toBeNull();
 });
 
 test('fork once and resume fork with read-only policy; only completed final answer is returned', async () => {
   const fixture = fake(rpc());
   let persisted: string | undefined;
-  const agent = createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, {
-    executablePath: fixture.executablePath, onSessionId: id => { persisted = id; },
+  const agent = createReadOnlyFork({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, {
+    instructions, executablePath: fixture.executablePath, onSessionId: id => { persisted = id; },
   });
   expect(await agent.answer('why?', new AbortController().signal)).toEqual({ sessionId: forkId, text: 'Final answer' });
   expect(persisted).toBe(forkId);
@@ -57,26 +58,28 @@ test('fork once and resume fork with read-only policy; only completed final answ
     expect(m.params.sandbox).toBe('read-only'); expect(m.params.approvalPolicy).toBe('never');
     expect(m.params.config.mcp_servers.danger.enabled).toBe(false);
   }
-  for (const m of calls.filter(m => m.method === 'turn/start')) expect(m.params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false });
+  const turns = calls.filter(m => m.method === 'turn/start');
+  for (const m of turns) expect(m.params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false });
+  expect(turns.map(m => m.params.input[0].text)).toEqual([`${instructions}\n\nwhy?`, `${instructions}\n\nfollowup`]);
   agent.dispose();
 });
 
 test('cancellation rejects promptly and does not publish incomplete output', async () => {
   const fixture = fake(rpc("send({method:'item/completed',params:{item:{type:'agentMessage',phase:'final_answer',text:'partial'}}});"));
   const controller = new AbortController();
-  const agent = createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, {
-    executablePath: fixture.executablePath, onSessionId: () => setTimeout(() => controller.abort(), 20),
+  const agent = createReadOnlyFork({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, {
+    instructions, executablePath: fixture.executablePath, onSessionId: () => setTimeout(() => controller.abort(), 20),
   });
   await expect(agent.answer('why?', controller.signal)).rejects.toThrow(); agent.dispose();
 });
 
 test('failed fork does not fall back to fresh session or resume parent', async () => {
   const fixture = fake(rpc().replace(`reply({thread:{id:'${forkId}'}})`, `send({id:m.id,error:{message:'Parent unavailable'}})`));
-  const agent = createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, fixture);
   await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('Parent unavailable');
   const calls = readFileSync(join(fixture.cwd, 'calls.jsonl'), 'utf8');
   expect(calls).not.toContain('thread/start'); expect(calls).not.toContain('turn/start');
-  expect(() => createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, { sessionId: parentId })).toThrow();
+  expect(() => createReadOnlyFork({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, { instructions, sessionId: parentId })).toThrow();
 });
 
 test('Claude forks then resumes using read tools only and returns result rather than thinking/progress', async () => {
@@ -88,7 +91,7 @@ for(const event of [
  {type:'assistant',message:{content:[{type:'thinking',thinking:'private'},{type:'text',text:'progress'}]}},
  {type:'result',subtype:'success',session_id:'${forkId}',result:'Completed reply'}
 ]) process.stdout.write(JSON.stringify(event)+'\\n');});`);
-  const agent = createDiscussionAgent({ provider: 'claude', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider: 'claude', sessionId: parentId, cwd: fixture.cwd }, fixture);
   expect((await agent.answer('question', new AbortController().signal)).text).toBe('Completed reply');
   await agent.answer('followup', new AbortController().signal);
   const [first, next] = readFileSync(join(fixture.cwd, 'args.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -121,7 +124,7 @@ test('slow startup and answers beyond fifteen minutes survive until a final answ
     },10);`).replace(`reply({thread:{id:'${forkId}'}})`, `{
       const timer=setInterval(()=>{if(!fs.existsSync('fork'))return;clearInterval(timer);reply({thread:{id:'${forkId}'}})},10);
     }`));
-  const agent = createDiscussionAgent({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider: 'codex', sessionId: parentId, cwd: fixture.cwd }, fixture);
   let activity = 0;
   let result: { text: string } | undefined, error: unknown;
   const timers = shortTimeouts();
@@ -144,7 +147,7 @@ test('slow startup and answers beyond fifteen minutes survive until a final answ
 
 for (const provider of ['codex', 'claude'] as const) test(`${provider} startup remains bounded and reports startup failure`, async () => {
   const fixture = fake("require('node:fs').writeFileSync('started','');process.stdin.resume();setInterval(()=>{},1000);");
-  const agent = createDiscussionAgent({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
   const timers = shortTimeouts();
   try {
     const answer = agent.answer('why?', new AbortController().signal).catch(error => error);
@@ -162,7 +165,7 @@ test('Claude partial activity is private, survives long answers and preserves ca
       process.stdout.write(JSON.stringify(event)+'\\n');
     setInterval(()=>{},1000);
   });`);
-  const agent = createDiscussionAgent({ provider: 'claude', sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider: 'claude', sessionId: parentId, cwd: fixture.cwd }, fixture);
   const controller = new AbortController(); let activity = 0; let error: Error | undefined;
   const timers = shortTimeouts();
   try {
@@ -178,7 +181,7 @@ test('Claude partial activity is private, survives long answers and preserves ca
 
 for (const provider of ['codex', 'claude'] as const) test(`${provider} process exit is reported separately from timeout or cancellation`, async () => {
   const fixture = fake(provider === 'codex' ? rpc('process.exit(17);') : 'process.exit(17);');
-  const agent = createDiscussionAgent({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
+  const agent = createReadOnlyFork({ provider, sessionId: parentId, cwd: fixture.cwd }, fixture);
   try {
     await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('exited');
   } finally { agent.dispose(); }

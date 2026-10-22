@@ -1,11 +1,10 @@
-import type { DiscussionAgent } from '@plannotator/shared/review-discussions';
-export type { DiscussionAgent } from '@plannotator/shared/review-discussions';
+import type { ReadOnlyFork } from '@plannotator/shared/read-only-fork';
 import { spawn } from 'node:child_process';
 import { CodexAppServerProcess, type RpcMessage } from '../ai/providers/codex-app-server';
 import { guardChildStreams, writeChildLine } from '../ai/providers/child-io';
 import { killWindowsProcessTree } from '../ai/providers/command-path';
 
-export interface DiscussionParent {
+export interface ForkParent {
   provider: 'codex' | 'claude';
   sessionId: string;
   cwd: string;
@@ -13,10 +12,9 @@ export interface DiscussionParent {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STARTUP_TIMEOUT_MS = 2 * 60_000;
-const INSTRUCTIONS = 'You are answering a Plannotator code-review discussion in a fork of the original conversation. Answer the question; do not implement changes, modify files, submit feedback, or contact external services. Read code if needed. Only your final answer will be published. Requests for modifications are collected separately for the original agent after final review submission.';
 
 /** Never pick the most recent session: it can belong to another review. */
-export function discoverDiscussionParent(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): DiscussionParent | null {
+export function discoverForkParent(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): ForkParent | null {
   let provider = env.PLANNOTATOR_DISCUSSION_PROVIDER;
   let sessionId = env.PLANNOTATOR_DISCUSSION_SESSION_ID;
   if (provider === undefined && sessionId === undefined) {
@@ -33,16 +31,16 @@ export function discoverDiscussionParent(env: NodeJS.ProcessEnv = process.env, c
     ? { provider, sessionId, cwd } : null;
 }
 
-export interface DiscussionAgentOptions {
-  /** Server-owned task instructions; the same read-only fork also generates guides. */
-  instructions?: string;
+export interface ReadOnlyForkOptions {
+  /** Server-owned task instructions; each caller supplies its own task. */
+  instructions: string;
   sessionId?: string;
   onSessionId?: (sessionId: string) => void;
   /** Overrides are server-owned, never accepted from the browser. */
   executablePath?: string;
 }
 
-export function createDiscussionAgent(parent: DiscussionParent, options: DiscussionAgentOptions = {}): DiscussionAgent {
+export function createReadOnlyFork(parent: ForkParent, options: ReadOnlyForkOptions): ReadOnlyFork {
   if (!UUID.test(parent.sessionId) || (options.sessionId && (!UUID.test(options.sessionId) || options.sessionId === parent.sessionId))) {
     throw new Error('Invalid discussion fork identity');
   }
@@ -70,8 +68,8 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
       signal.addEventListener('abort', abort, { once: true });
       try {
         const text = parent.provider === 'codex'
-          ? await codexAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity)
-          : await claudeAnswer(parent, sessionId, `${options.instructions ?? INSTRUCTIONS}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity);
+          ? await codexAnswer(parent, sessionId, `${options.instructions}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity)
+          : await claudeAnswer(parent, sessionId, `${options.instructions}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity);
         controller.signal.throwIfAborted();
         if (!sessionId || !text.trim()) throw new Error('Agent completed without a final answer');
         return { sessionId, text };
@@ -90,7 +88,7 @@ export function createDiscussionAgent(parent: DiscussionParent, options: Discuss
   };
 }
 
-async function codexAnswer(parent: DiscussionParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
+async function codexAnswer(parent: ForkParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
   remember: (id: unknown) => string, executable = 'codex', onActivity?: () => void): Promise<string> {
   const proc = new CodexAppServerProcess();
   const abort = () => proc.kill();
@@ -160,7 +158,7 @@ async function codexAnswer(parent: DiscussionParent, sessionId: string | undefin
   }
 }
 
-async function claudeAnswer(parent: DiscussionParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
+async function claudeAnswer(parent: ForkParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
   remember: (id: unknown) => string, executable = 'claude', onActivity?: () => void): Promise<string> {
   const args = ['--print', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--resume', sessionId ?? parent.sessionId,
     ...(!sessionId ? ['--fork-session'] : []), '--tools', 'Read,Glob,Grep', '--allowedTools', 'Read,Glob,Grep',

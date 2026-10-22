@@ -21,7 +21,6 @@ import {
   compactRowIdForReviewDecisionItem,
   compactRowIdForPlatformDecisionItem,
   createGeneralReviewComment,
-  readApprovalNotesAdvert,
   resolvePlatformDecisionAction,
   resolveReviewDecisionAction,
 } from './reviewDecision';
@@ -155,7 +154,7 @@ import type { FileAnnotationSelection } from './dock/ReviewStateContext';
 import { useAnnotationFactory } from './hooks/useAnnotationFactory';
 import { DEMO_DIFF } from './demoData';
 import { exportReviewFeedback, buildProseFeedback, commitShaFromMode } from './utils/exportFeedback';
-import { parseDiffToFiles } from './utils/diffParser';
+import { useReviewSnapshot, type ReviewSnapshotResponse } from './hooks/useReviewSnapshot';
 import {
   ReviewSubmissionDialog,
   buildPlatformReviewBody,
@@ -190,7 +189,7 @@ import {
 import type { DiffFile, AnnotationScrollTarget } from './types';
 import { annotationMatchesPrScope, proseAnnotationMatchesPr } from './utils/annotationScope';
 import { annotationNavigation, reanchorCodeAnnotations, restorableViewedFiles } from './utils/codeAnnotationAnchor';
-import type { DiffOption, WorktreeInfo, GitContext, SinceBaseSections, CommitDiffInfo, ReviewSourceKind } from '@plannotator/shared/types';
+import type { DiffOption, WorktreeInfo, GitContext, ReviewSourceKind } from '@plannotator/shared/types';
 import { SectionsPanel } from './components/SectionsPanel';
 import { CommitsPanel } from './components/CommitsPanel';
 import { useCommitsView } from './hooks/useCommitsView';
@@ -249,54 +248,8 @@ function getReviewRecoveryStorage(): ReviewRecoveryStorage | null {
   }
 }
 
-interface DiffData {
-  files: DiffFile[];
-  rawPatch: string;
-  gitRef: string;
-  origin?: Origin;
-  diffType?: string;
-  /** Server-built "changes under review" description for Ask AI (current view). */
-  aiReviewContext?: string;
-  gitContext?: GitContext;
-  diffOptions?: DiffOption[];
-  sharingEnabled?: boolean;
-  prStackInfo?: PRStackInfo | null;
-  prDiffScope?: PRDiffScope;
-  prDiffScopeOptions?: PRDiffScopeOption[];
-  semanticDiff?: SemanticDiffAdvert;
-  callFlow?: CallFlowAdvert;
-}
-
 function getFileTabTitle(filePath: string): string {
   return filePath.split('/').pop() ?? filePath;
-}
-
-// When the since-base sections sidecar is present, order the master file list
-// the way the sections panel presents it (committed → staged changes →
-// unstaged changes → untracked, stable within groups). Every consumer — the
-// sections panel, the all-files view, file navigation — then shares one
-// top-down order instead of raw patch order.
-//
-// INVARIANT: this reads the sidecar's SNAPSHOT `staged` flag, which is only
-// valid at sidecar-fresh moments — every current call site (initial load,
-// diff switch, PR response) also resets the session staging overrides, so
-// snapshot ≡ effective when the order is computed. Do NOT call this
-// mid-session to re-sort on stage/unstage: live staged display belongs to
-// useGitAdd's effective stagedFiles set (see AGENTS.md), and the file order
-// deliberately stays stable until the next refresh.
-function orderFilesBySections(files: DiffFile[], sections?: SinceBaseSections | null): DiffFile[] {
-  if (!sections) return files;
-  const rank = (file: DiffFile): number => {
-    const entry = sections.files[file.path];
-    const group = entry?.group ?? 'committed';
-    if (group === 'committed') return 0;
-    if (group === 'changes') return entry?.staged ? 1 : 2;
-    return 3;
-  };
-  return files
-    .map((file, index) => ({ file, index }))
-    .sort((a, b) => rank(a.file) - rank(b.file) || a.index - b.index)
-    .map((entry) => entry.file);
 }
 
 /** Hint shown following the cursor while hovering a sidebar/panel resize handle. */
@@ -399,8 +352,11 @@ const ReviewApp: React.FC = () => {
   useViewportEnvironment();
   const isCompactTouchLayout = useCompactTouchLayout();
   const { resolvedMode } = useTheme();
-  const [diffData, setDiffData] = useState<DiffData | null>(null);
-  const [files, setFiles] = useState<DiffFile[]>([]);
+  const {
+    diffData, files, snapshotId, sections, commitInfo, generatedFiles, baseBehindRemote,
+    approvalNotesSupported, imagePreviewSupported, markdownPreviewSupported,
+    applySnapshot, setBaseBehindRemote,
+  } = useReviewSnapshot();
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [annotations, setAnnotations] = useState<CodeAnnotation[]>([]);
   const annotationsRef = useRef(annotations);
@@ -576,11 +532,6 @@ const ReviewApp: React.FC = () => {
   const viewedFilesRef = useRef(viewedFiles);
   viewedFilesRef.current = viewedFiles;
   const [hideViewedFiles, setHideViewedFiles] = useState(false);
-  // Generated-files sidecar (#1317): repo-relative paths marked
-  // `linguist-generated` in `.gitattributes`. Their diffs seed collapsed on
-  // the all-files surface (GitHub-style) and their headers carry a
-  // "generated" tag. Presentation-only — the diff data is never filtered.
-  const [generatedFiles, setGeneratedFiles] = useState<Set<string>>(new Set());
   // Generated files the user explicitly expanded — session-local so an
   // expansion survives re-renders, dock panel remounts, and identity
   // re-seeds until the page reloads.
@@ -618,18 +569,6 @@ const ReviewApp: React.FC = () => {
   //                   produced "trailing context mismatch" warnings).
   const [selectedBase, setSelectedBase] = useState<string | null>(null);
   const [committedBase, setCommittedBase] = useState<string | null>(null);
-  // Since-base sections sidecar (committed / changes / untracked grouping).
-  const [sections, setSections] = useState<SinceBaseSections | null>(null);
-  // Commit metadata sidecar while a commit:<sha> diff is active — drives the
-  // description card + collapsed seeding on the all-files surface.
-  const [commitInfo, setCommitInfo] = useState<CommitDiffInfo | null>(null);
-  // The local origin/<default> tracking ref is behind the actual remote —
-  // the "Baseline is behind GitHub · Fetch" banner.
-  const [baseBehindRemote, setBaseBehindRemote] = useState(false);
-  // Server snapshot id (draftKey) for the diff this client is RENDERING.
-  // Echoed on every freshness probe so the server can answer per-client:
-  // "your snapshot moved" is independent of whether the VCS changed.
-  const [snapshotId, setSnapshotId] = useState<string | undefined>(undefined);
   const discussions = useReviewDiscussionState(snapshotId);
   const semanticDiffUsable = semanticDiffEnabled && semanticDiffAvailable;
   const callFlowAvailable = callFlowEnabled && callFlowAdvert.available;
@@ -685,19 +624,6 @@ const ReviewApp: React.FC = () => {
   const [compactDecisionComposer, setCompactDecisionComposer] = useState<DecisionMenuItem['id'] | null>(null);
   const [compactDecisionConfirm, setCompactDecisionConfirm] = useState<DecisionMenuItem['id'] | null>(null);
   const [sharingEnabled, setSharingEnabled] = useState(true);
-  // Server capability advert (spec §6.4): does this session's decision
-  // consumer deliver approve-time feedback? Defaults false so an old server
-  // that never sends the field renders no approve-carrying items (PR3
-  // behavior); read off every diff payload that carries it.
-  const [approvalNotesSupported, setApprovalNotesSupported] = useState(false);
-  // Image preview capability advert (#1598): can the server read Before/After
-  // bytes of changed images? Absent (old server, demo) reads as false, so no
-  // preview renders and no /api/review-image request is ever issued.
-  const [imagePreviewSupported, setImagePreviewSupported] = useState(false);
-  // Markdown preview capability advert: the server can hand both sides of a
-  // file in full (and serve a Markdown file's own images). Absent (old
-  // server, demo) reads as false: no preview UI at all.
-  const [markdownPreviewSupported, setMarkdownPreviewSupported] = useState(false);
   // Session-constant capability advert from `/api/diff`: 'patch' means the
   // diff is caller-supplied bytes (`plannotator review --patch-file`) with no
   // repository behind it. ABSENT reads as 'vcs', so an old server keeps every
@@ -2264,11 +2190,8 @@ const ReviewApp: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: {
-        rawPatch: string;
-        gitRef: string;
+      .then((data: ReviewSnapshotResponse & {
         aiEnabled?: boolean;
-        aiReviewContext?: string;
         origin?: Origin;
         mode?: string;
         diffType?: string;
@@ -2278,10 +2201,7 @@ const ReviewApp: React.FC = () => {
         agentCwd?: string | null;
         markdownExtensions?: string[];
         sharingEnabled?: boolean;
-        approvalNotesSupported?: boolean;
         serverSession?: string;
-        imagePreviewSupported?: boolean;
-        markdownPreviewSupported?: boolean;
         sourceKind?: ReviewSourceKind;
         repoInfo?: { display: string; branch?: string };
         prMetadata?: PRMetadata;
@@ -2295,14 +2215,7 @@ const ReviewApp: React.FC = () => {
         viewedFiles?: string[];
         error?: string;
         isWSL?: boolean;
-        semanticDiff?: SemanticDiffAdvert;
-        callFlow?: CallFlowAdvert;
-        sections?: SinceBaseSections;
-        commitInfo?: CommitDiffInfo;
-        generatedFiles?: string[];
-        baseBehindRemote?: boolean;
         openStatePinned?: boolean;
-        snapshotId?: string;
         serverConfig?: Record<string, unknown> & { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean };
         autoUpdateNotice?: unknown;
         updateAvailable?: unknown;
@@ -2322,23 +2235,8 @@ const ReviewApp: React.FC = () => {
         setAutoUpdateNotice(parseAutoUpdateNotice(data.autoUpdateNotice));
         setUpdateAdvert(parseUpdateAdvert(data.updateAvailable));
         updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
-        setSnapshotId(data.snapshotId);
         setAiEnabled(data.aiEnabled !== false);
-        const apiFiles = orderFilesBySections(parseDiffToFiles(data.rawPatch), data.sections);
-        setDiffData({
-          files: apiFiles,
-          rawPatch: data.rawPatch,
-          gitRef: data.gitRef,
-          origin: data.origin,
-          diffType: data.diffType,
-          aiReviewContext: data.aiReviewContext,
-          gitContext: data.gitContext,
-          diffOptions: data.diffOptions,
-          sharingEnabled: data.sharingEnabled,
-          semanticDiff: data.semanticDiff,
-          callFlow: data.callFlow,
-        });
-        setFiles(apiFiles);
+        applySnapshot(data);
         setReviewMode(data.mode ?? null);
         setWorkspaceDiffOptions(data.mode === 'workspace' ? (data.diffOptions ?? []) : null);
         if (data.origin) setOrigin(data.origin);
@@ -2357,11 +2255,8 @@ const ReviewApp: React.FC = () => {
         // preview (and local-link detection) treat as Markdown.
         setExtraMarkdownExtensions(data.markdownExtensions);
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
-        setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
         // Stale-tab guard: every decision echoes this server's nonce.
         adoptServerSession(data.serverSession);
-        setImagePreviewSupported(data.imagePreviewSupported === true);
-        setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
         // Session-constant: a static patch session has no diff-type switch to
         // re-advertise it on, so `/api/diff` is the only place it can arrive.
         setSourceKind(data.sourceKind === 'patch' ? 'patch' : 'vcs');
@@ -2386,22 +2281,12 @@ const ReviewApp: React.FC = () => {
         if (data.isWSL) setIsWSL(true);
         setSemanticDiffAvailable(data.semanticDiff?.available === true);
         if (data.callFlow) setCallFlowAdvert(data.callFlow);
-        setSections(data.sections ?? null);
-        setCommitInfo(data.commitInfo ?? null);
-        setGeneratedFiles(new Set(data.generatedFiles ?? []));
-        setBaseBehindRemote(data.baseBehindRemote === true);
         setOpenStatePinned(data.openStatePinned === true);
       })
       .catch(() => {
         // Not in API mode - use demo content
         setAiEnabled(true);
-        const demoFiles = parseDiffToFiles(DEMO_DIFF);
-        setDiffData({
-          files: demoFiles,
-          rawPatch: DEMO_DIFF,
-          gitRef: 'demo',
-        });
-        setFiles(demoFiles);
+        applySnapshot({ rawPatch: DEMO_DIFF, gitRef: 'demo' });
         setWorkspaceDiffOptions(null);
         setSemanticDiffAvailable(false);
         setCallFlowAdvert({
@@ -3026,37 +2911,19 @@ const ReviewApp: React.FC = () => {
   });
 
   // Shared function: apply a PR response (used by both initial load and PR switch)
-  function applyPRResponse(data: PRSessionUpdate & {
-    rawPatch: string; gitRef: string;
-    aiReviewContext?: string;
-    snapshotId?: string;
+  function applyPRResponse(data: PRSessionUpdate & ReviewSnapshotResponse & {
     repoInfo?: { display: string; branch?: string };
     viewedFiles?: string[]; error?: string;
-    semanticDiff?: SemanticDiffAdvert;
-    callFlow?: CallFlowAdvert;
     agentCwd?: string | null;
-    approvalNotesSupported?: boolean;
-    imagePreviewSupported?: boolean;
-    markdownPreviewSupported?: boolean;
     draftState?: CodeDraftTargetState;
   }) {
     const isPRSwitch = !!data.prMetadata;
-    setSnapshotId(data.snapshotId);
     // In-place PR / scope switch (#1590): the draft target moved. Adopt the
     // new target's generation floor and offer any draft it holds.
     adoptDraftTarget(data.draftState);
-    // Keep the approval-notes advert in lockstep with whatever payload the
-    // client last applied — the servers echo it on the PR family too.
-    if (data.approvalNotesSupported !== undefined) {
-      setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
-    }
-    if (data.imagePreviewSupported !== undefined) setImagePreviewSupported(data.imagePreviewSupported === true);
-    if (data.markdownPreviewSupported !== undefined) setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
-    const nextFiles = parseDiffToFiles(data.rawPatch);
+    const nextFiles = applySnapshot(data);
     dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
     needsInitialDiffPanel.current = true;
-    setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, aiReviewContext: data.aiReviewContext } : prev);
-    setFiles(nextFiles);
     if (isPRSwitch) {
       setActiveFileIndex(0);
     } else {
@@ -3143,25 +3010,12 @@ const ReviewApp: React.FC = () => {
 
       if (!res.ok) throw new Error('Failed to switch diff');
 
-      const data = await res.json() as {
-        rawPatch: string;
-        gitRef: string;
-        aiReviewContext?: string;
-        snapshotId?: string;
+      const data = await res.json() as ReviewSnapshotResponse & {
         diffType: string;
         base?: string;
         gitContext?: GitContext;
         diffOptions?: DiffOption[];
         error?: string;
-        semanticDiff?: SemanticDiffAdvert;
-        callFlow?: CallFlowAdvert;
-        sections?: SinceBaseSections;
-        commitInfo?: CommitDiffInfo;
-        generatedFiles?: string[];
-        baseBehindRemote?: boolean;
-        approvalNotesSupported?: boolean;
-        imagePreviewSupported?: boolean;
-        markdownPreviewSupported?: boolean;
         superseded?: boolean;
       };
 
@@ -3176,17 +3030,7 @@ const ReviewApp: React.FC = () => {
       // newer commit switch still needs — correct by construction. Failed
       // switches never get here either, keeping the memo for a later retry.
       if (!isCommitDiffType(data.diffType)) preCommitDiffRef.current = null;
-      setSnapshotId(data.snapshotId);
-      // Session-constant in practice, but re-read from any payload that
-      // carries it so the client stays in lockstep with whatever it last
-      // applied (the server echoes the advert on the whole diff family).
-      if (data.approvalNotesSupported !== undefined) {
-        setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
-      }
-      if (data.imagePreviewSupported !== undefined) setImagePreviewSupported(data.imagePreviewSupported === true);
-      if (data.markdownPreviewSupported !== undefined) setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
-
-      const nextFiles = orderFilesBySections(parseDiffToFiles(data.rawPatch), data.sections);
+      const nextFiles = applySnapshot(data);
       // Durable progress reconciles every new snapshot independently of the
       // auto-view setting. Keep the legacy in-memory rule only for surfaces
       // without a stable persistence identity (e.g. piped patches).
@@ -3212,22 +3056,16 @@ const ReviewApp: React.FC = () => {
       }
       applySemanticDiffAdvert(data.semanticDiff);
       applyCallFlowAdvert(data.callFlow);
-      setSections(data.sections ?? null);
-      setCommitInfo(data.commitInfo ?? null);
-      setGeneratedFiles(new Set(data.generatedFiles ?? []));
-      setBaseBehindRemote(data.baseBehindRemote === true);
 
       if (options?.preserveFile) {
         // Whitespace toggle: update patch in-place, keep the active file.
         // If the current file was removed (whitespace-only), retarget the
         // dock panel to the first remaining file.
-        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, aiReviewContext: data.aiReviewContext } : prev);
         // A jj revision rewritten since it was opened (editing `@`) comes back
         // as its successor's jj-commit id: adopt it, or the next refresh would
         // ask for the frozen id again and the rail could not mark the row.
         if (isCommitDiffType(data.diffType) && data.diffType !== fullDiffType) {
           setDiffType(data.diffType);
-          setDiffData(prev => prev ? { ...prev, diffType: data.diffType } : prev);
         }
         if (data.diffOptions) setWorkspaceDiffOptions(data.diffOptions);
         // Adopt the server's base even on in-place refreshes: the staleness
@@ -3239,7 +3077,6 @@ const ReviewApp: React.FC = () => {
           setSelectedBase(data.base);
           setCommittedBase(data.base);
         }
-        setFiles(nextFiles);
         const currentPath = files[activeFileIndex]?.path;
         const nextIdx = currentPath ? nextFiles.findIndex(f => f.path === currentPath) : -1;
         if (nextIdx !== -1) {
@@ -3258,8 +3095,6 @@ const ReviewApp: React.FC = () => {
       } else {
         dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
         needsInitialDiffPanel.current = true;
-        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, diffType: data.diffType, aiReviewContext: data.aiReviewContext } : prev);
-        setFiles(nextFiles);
         setDiffType(data.diffType);
         if (data.diffOptions) setWorkspaceDiffOptions(data.diffOptions);
         if (data.base) {
@@ -3301,7 +3136,7 @@ const ReviewApp: React.FC = () => {
     } finally {
       setIsLoadingDiff(false);
     }
-  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile, applySemanticDiffAdvert, applyCallFlowAdvert, clearPendingSelection, autoViewedEnabled, diffType, reviewProgressStatus, flushReviewProgress]);
+  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile, applySemanticDiffAdvert, applyCallFlowAdvert, applySnapshot, clearPendingSelection, autoViewedEnabled, diffType, reviewProgressStatus, flushReviewProgress]);
 
   // Switch the base branch the current diff compares against.
   // Only triggers a refetch when the active mode actually uses a base.

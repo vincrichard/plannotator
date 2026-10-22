@@ -9,6 +9,7 @@ import { basename, resolve as resolvePath } from "node:path";
 
 import { SingleFlight } from "../generated/single-flight.ts";
 import { contentHash } from "../generated/draft.ts";
+import { createReviewTurnPins } from "../generated/review-turn.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
@@ -436,6 +437,7 @@ export async function startReviewServer(options: {
 	const hasLocalAccess = !!options.gitContext;
 	const sessionVcsType = options.gitContext?.vcsType;
 	let clientGitContext = options.gitContext;
+	const turnPins = createReviewTurnPins();
 	const isRemote = isRemoteSession();
 	const wslFlag = detectWSL();
 	let prRef = prMeta ? prRefFromMetadata(prMeta) : null;
@@ -2788,7 +2790,9 @@ export async function startReviewServer(options: {
 				if (!updatedContext && options.gitContext && !isSameCwdCommitSwitch(previousDiffType as string, newType as string)) {
 					try {
 						const effectiveCwd = resolveVcsCwd(newType as DiffType, options.gitContext.cwd);
-						updatedContext = await getVcsContext(effectiveCwd, sessionVcsType);
+						const context = await getVcsContext(effectiveCwd, sessionVcsType);
+						turnPins.retain(context);
+						updatedContext = context;
 						updatedContextRevision = getGitButlerContextRevision(updatedContext) ?? "";
 					} catch {
 						/* best-effort */
@@ -4015,7 +4019,9 @@ export async function startReviewServer(options: {
 	});
 
 	requestHostGuard.attach(server);
-	const { port, portSource } = await listenOnPort(server);
+	try { turnPins.retain(options.gitContext); }
+	catch (error) { turnPins.dispose(); throw error; }
+	const { port, portSource } = await listenOnPort(server).catch(error => { turnPins.dispose(); throw error; });
 	boundPort = port;
 	// Remote sessions serve the app page compressed (#1617); start gzip (what
 	// browsers ask for over plain http) now so the first load does not wait.
@@ -4025,8 +4031,34 @@ export async function startReviewServer(options: {
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 
+	const stop = () => {
+		// try/finally: a throwing dispose must never leave the listener bound.
+		try {
+			process.removeListener("exit", exitHandler);
+			agentJobs.killAll();
+			callFlowService.cancelAll();
+			aiRuntime?.dispose();
+		} finally {
+			server.close();
+			// close() only stops the listener; drain browser keep-alive sockets so a
+			// stopped session's connections die immediately instead of at the
+			// browser's whim (parity with Bun's server.stop(), which closes idle
+			// connections). Guarded: jiti can run under hosts whose node:http lacks
+			// closeAllConnections.
+			server.closeAllConnections?.();
+			turnPins.dispose();
+			// Invoke cleanup callback (e.g., remove temp worktree)
+			if (options.onCleanup) {
+				try {
+					const result = options.onCleanup();
+					if (result instanceof Promise) result.catch(() => {});
+				} catch { /* best effort */ }
+			}
+		}
+	};
 	if (options.onReady) {
-		options.onReady(serverUrl, isRemote, port);
+		try { await options.onReady(serverUrl, isRemote, port); }
+		catch (error) { stop(); throw error; }
 	}
 
 	return {
@@ -4036,29 +4068,6 @@ export async function startReviewServer(options: {
 		isRemote,
 		waitForDecision: () => decisionPromise,
 		hostControl,
-		stop: () => {
-			// try/finally: a throwing dispose must never leave the listener bound.
-			try {
-				process.removeListener("exit", exitHandler);
-				agentJobs.killAll();
-				callFlowService.cancelAll();
-				aiRuntime?.dispose();
-			} finally {
-				server.close();
-				// close() only stops the listener; drain browser keep-alive sockets so a
-				// stopped session's connections die immediately instead of at the
-				// browser's whim (parity with Bun's server.stop(), which closes idle
-				// connections). Guarded: jiti can run under hosts whose node:http lacks
-				// closeAllConnections.
-				server.closeAllConnections?.();
-				// Invoke cleanup callback (e.g., remove temp worktree)
-				if (options.onCleanup) {
-					try {
-						const result = options.onCleanup();
-						if (result instanceof Promise) result.catch(() => {});
-					} catch { /* best effort */ }
-				}
-			}
-		},
+		stop,
 	};
 }

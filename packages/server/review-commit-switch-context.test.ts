@@ -20,9 +20,11 @@ import { join } from "node:path";
 import { startReviewServer as startBunReviewServer } from "./review";
 import { startReviewServer as startPiReviewServer } from "../../apps/pi-extension/server";
 import { getVcsContext, runVcsDiff } from "./vcs";
+import { captureReviewTurn, readReviewTurn } from "../shared/review-turn";
 
 const originalDataDir = process.env.PLANNOTATOR_DATA_DIR;
 const originalPort = process.env.PLANNOTATOR_PORT;
+const originalSession = process.env.PLANNOTATOR_DISCUSSION_SESSION_ID;
 const tempDirs: string[] = [];
 
 const RUNTIMES = [
@@ -71,6 +73,7 @@ async function reservePort(): Promise<number> {
 
 type SwitchResponse = {
   diffType?: string;
+  rawPatch?: string;
   gitContext?: { recentCommits?: Array<{ hash?: string; sha?: string; subject?: string; message?: string }> };
 };
 
@@ -87,11 +90,67 @@ afterEach(() => {
   else process.env.PLANNOTATOR_DATA_DIR = originalDataDir;
   if (originalPort === undefined) delete process.env.PLANNOTATOR_PORT;
   else process.env.PLANNOTATOR_PORT = originalPort;
+  if (originalSession === undefined) delete process.env.PLANNOTATOR_DISCUSSION_SESSION_ID;
+  else process.env.PLANNOTATOR_DISCUSSION_SESSION_ID = originalSession;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("same-cwd commit switch keeps the client's git context", () => {
   for (const [runtime, startServer] of RUNTIMES) {
+    test(`${runtime}: failed ready callback releases turn pins and closes its server`, async () => {
+      process.env.PLANNOTATOR_DATA_DIR = makeTempDir("plannotator-turn-pin-failure-");
+      process.env.PLANNOTATOR_PORT = String(await reservePort());
+      const session = '12345678-1234-1234-1234-123456789abc';
+      process.env.PLANNOTATOR_DISCUSSION_SESSION_ID = session;
+      const repoDir = initRepo();
+      await captureReviewTurn('start', repoDir, session, 'turn');
+      writeFileSync(join(repoDir, 'a.txt'), 'turn edit\n');
+      await captureReviewTurn('stop', repoDir, session, 'turn');
+      const gitContext = await getVcsContext(repoDir, 'git');
+      const diff = await runVcsDiff('uncommitted', 'main', repoDir);
+      let url = '';
+      await expect(startServer({ rawPatch: diff.patch, gitRef: diff.label,
+        diffType: 'uncommitted', gitContext, htmlContent: '<html>review</html>',
+        onReady: async readyUrl => {
+          url = readyUrl;
+          expect(git(repoDir, ['for-each-ref', '--format=%(refname)', 'refs/plannotator/reviews'])).not.toBe('');
+          throw new Error('ready failed');
+        },
+      })).rejects.toThrow('ready failed');
+      expect(git(repoDir, ['for-each-ref', '--format=%(refname)', 'refs/plannotator/reviews'])).toBe('');
+      await expect(fetch(`${url}/api/diff`)).rejects.toThrow();
+    }, 20_000);
+
+    test(`${runtime}: offered last-turn snapshots survive later turns and GC until the review stops`, async () => {
+      process.env.PLANNOTATOR_DATA_DIR = makeTempDir("plannotator-turn-pins-data-");
+      process.env.PLANNOTATOR_PORT = String(await reservePort());
+      const session = '12345678-1234-1234-1234-123456789abc';
+      process.env.PLANNOTATOR_DISCUSSION_SESSION_ID = session;
+      const repoDir = initRepo();
+      const turn = async (n: number) => {
+        await captureReviewTurn('start', repoDir, session, `turn-${n}`);
+        writeFileSync(join(repoDir, 'a.txt'), `turn ${n}\n`);
+        await captureReviewTurn('stop', repoDir, session, `turn-${n}`);
+        return (await readReviewTurn(repoDir, session))!;
+      };
+      const first = await turn(1);
+      const gitContext = await getVcsContext(repoDir, 'git');
+      const diff = await runVcsDiff('uncommitted', 'main', repoDir);
+      const server = await startServer({ rawPatch: diff.patch, gitRef: diff.label,
+        diffType: 'uncommitted', gitContext, htmlContent: '<html>review</html>' });
+      try {
+        const second = await turn(2);
+        await switchDiff(server.url, { diffType: 'uncommitted' });
+        for (let n = 3; n <= 5; n++) await turn(n);
+        git(repoDir, ['reflog', 'expire', '--expire=now', '--all']);
+        git(repoDir, ['gc', '--prune=now']);
+        expect((await switchDiff(server.url, { diffType: `commit:${first}` })).rawPatch).toContain('+turn 1');
+        expect((await switchDiff(server.url, { diffType: `commit:${second}` })).rawPatch).toContain('+turn 2');
+        expect(git(repoDir, ['for-each-ref', '--format=%(refname)', 'refs/plannotator/reviews'])).not.toBe('');
+      } finally { server.stop(); }
+      expect(git(repoDir, ['for-each-ref', '--format=%(refname)', 'refs/plannotator/reviews'])).toBe('');
+    }, 20_000);
+
     test(`${runtime}: commit:<sha> switch omits gitContext; a recomputing switch still carries it`, async () => {
       process.env.PLANNOTATOR_DATA_DIR = makeTempDir("plannotator-commit-switch-data-");
       if (runtime === "Pi") process.env.PLANNOTATOR_PORT = String(await reservePort());

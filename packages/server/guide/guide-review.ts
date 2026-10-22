@@ -1,4 +1,4 @@
-import { createDiscussionAgent, type DiscussionParent } from "../review-discussion-agent";
+import { createReadOnlyFork, type ForkParent } from "../read-only-fork";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
@@ -494,7 +494,7 @@ export async function parseGuideFileOutput(outputPath: string): Promise<CodeGuid
 }
 
 export interface GuideSessionBuildCommandOptions {
-  parent?: DiscussionParent;
+  parent?: ForkParent;
   cwd: string;
   patch: string;
   diffType: DiffType;
@@ -711,7 +711,7 @@ export function createGuideSession(): GuideSession {
         return {
           command: [], cwd, prompt, engine: parent.provider, model: "", label: repair ? "Guide Repair · session fork" : "Guided Review · session fork",
           async run(signal) {
-            const agent = createDiscussionAgent({ ...parent, cwd }, {
+            const agent = createReadOnlyFork({ ...parent, cwd }, {
               instructions: 'Generate a Plannotator guided review in a fork of the original conversation. Use inherited context to explain intent, but describe only the supplied review snapshot. Do not implement changes, modify files, submit feedback, or contact external services. Only your final answer is published. Return only JSON matching this schema, without Markdown fences:\n' + GUIDE_SCHEMA_JSON,
             });
             try { return (await agent.answer(prompt, signal)).text; }

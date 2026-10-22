@@ -222,6 +222,7 @@ function makeFetch(): typeof fetch {
       return Response.json({ ok: true, submission: { status: "complete" } });
     }
     if (url.pathname === "/api/diff/fresh") return Response.json({ fresh: true });
+    if (url.pathname === "/api/review-discussions") return Response.json({ supported: false, available: false, snapshotId: "", version: 0, threads: [] });
     if (url.pathname === "/api/ai/capabilities") return Response.json(aiCapabilities);
     if (url.pathname === "/api/draft") return Response.json({ error: "Not found" }, { status: 404 });
     if (url.pathname === "/api/feedback") {

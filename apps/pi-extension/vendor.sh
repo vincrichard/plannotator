@@ -58,8 +58,12 @@ cp ../../packages/shared/call-flow-runtime/package-lock.json generated/call-flow
 rm -rf generated/call-flow-runtime/packs
 cp -R ../../packages/shared/call-flow-runtime/packs generated/call-flow-runtime/packs
 
+# Shared fork contract has the same source basename as its server implementation.
+printf '// @generated — DO NOT EDIT. Source: packages/shared/read-only-fork.ts\n' \
+  | cat - "../../packages/shared/read-only-fork.ts" > "generated/read-only-fork-types.ts"
+
 # Vendor review agent modules from packages/server/ — rewrite imports for generated/ layout
-for f in agent-review-message codex-review claude-review review-findings marker-review path-utils review-skill-loader; do
+for f in agent-review-message codex-review claude-review review-findings marker-review path-utils review-skill-loader read-only-fork; do
   src="../../packages/server/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/server/%s.ts\n' "$f" | cat - "$src" \
     | sed 's|from "./vcs"|from "./review-core.ts"|' \
@@ -71,6 +75,8 @@ for f in agent-review-message codex-review claude-review review-findings marker-
     | sed 's|from "@plannotator/shared/external-annotation"|from "./external-annotation.ts"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir.ts"|' \
     | sed 's|from "@plannotator/shared/review-prompt"|from "./review-prompt.ts"|' \
+    | sed "s|from '@plannotator/shared/read-only-fork'|from './read-only-fork-types.ts'|" \
+    | sed "s|from '../ai/providers/|from './ai/providers/|" \
     > "generated/$f.ts"
 done
 
@@ -100,6 +106,7 @@ for f in guide-review; do
     | sed 's|from "\.\./pr"|from "./pr-provider.ts"|' \
     | sed 's|from "\.\./agent-review-message"|from "./agent-review-message.ts"|' \
     | sed 's|from "\.\./marker-review"|from "./marker-review.ts"|' \
+    | sed 's|from "\.\./read-only-fork"|from "./read-only-fork.ts"|' \
     | sed 's|from "\.\./claude-review"|from "./claude-review.ts"|' \
     | sed 's|from "\.\./config"|from "./config.ts"|' \
     | sed 's|from "@plannotator/shared/guide"|from "./guide.ts"|' \

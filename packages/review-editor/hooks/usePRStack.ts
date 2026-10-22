@@ -1,11 +1,8 @@
 import { useState, useCallback, type RefObject } from 'react';
 import type { PRDiffScope } from '@plannotator/shared/pr-stack';
-import type { SemanticDiffAdvert } from '@plannotator/shared/semantic-diff-types';
+import type { ReviewSnapshotResponse } from './useReviewSnapshot';
 
-export interface PRSwitchResponse {
-  rawPatch: string;
-  gitRef: string;
-  aiReviewContext?: string;
+export interface PRSwitchResponse extends ReviewSnapshotResponse {
   prMetadata?: unknown;
   prStackInfo?: unknown;
   prStackTree?: unknown;
@@ -16,8 +13,6 @@ export interface PRSwitchResponse {
   repoInfo?: unknown;
   viewedFiles?: string[];
   error?: string;
-  semanticDiff?: SemanticDiffAdvert;
-  approvalNotesSupported?: boolean;
 }
 
 export interface PRStackCallbacks {

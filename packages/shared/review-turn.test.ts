@@ -3,7 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureReviewTurn, readReviewTurn } from './review-turn';
+import { captureReviewTurn, createReviewTurnPins, readReviewTurn } from './review-turn';
+import type { GitContext } from './review-core';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -99,6 +100,87 @@ test('reverting a previewed turn restores the previous nonempty turn', async () 
   await captureReviewTurn('stop', cwd, session, 'reverted');
   expect(await readReviewTurn(cwd, session)).toBe(first);
 });
+
+function turnContext(cwd: string, sha: string): GitContext {
+  return { cwd, root: cwd, vcsType: 'git', currentBranch: 'main', defaultBranch: 'main',
+    diffOptions: [{ id: `commit:${sha}`, label: 'Last turn changes' }], worktrees: [],
+    availableBranches: { local: [], remote: [] } };
+}
+
+test('completed turns retain only the current and rollback snapshots while open reviews pin older turns', async () => {
+  const cwd = repo();
+  const pins = createReviewTurnPins();
+  const otherReview = createReviewTurnPins();
+  let first = '';
+  try {
+    for (let turn = 0; turn < 6; turn++) {
+      await captureReviewTurn('start', cwd, session, `turn-${turn}`);
+      writeFileSync(join(cwd, 'file.txt'), `turn ${turn}\n`);
+      await captureReviewTurn('stop', cwd, session, `turn-${turn}`);
+      if (turn === 0) {
+        first = (await readReviewTurn(cwd, session))!;
+        pins.retain(turnContext(cwd, first));
+        pins.retain(turnContext(cwd, first));
+        otherReview.retain(turnContext(cwd, first));
+      }
+    }
+    expect(git(cwd, 'rev-list', '--count', (await readReviewTurn(cwd, session))!)).toBe('2');
+    expect(git(cwd, 'for-each-ref', '--format=%(refname)', 'refs/plannotator/reviews').split('\n')).toHaveLength(2);
+    pins.dispose();
+    pins.dispose();
+    git(cwd, 'reflog', 'expire', '--expire=now', '--all');
+    git(cwd, 'gc', '--prune=now');
+    expect(git(cwd, 'diff', `${first}^`, first)).toContain('+turn 0');
+    otherReview.dispose();
+    git(cwd, 'gc', '--prune=now');
+    expect(git(cwd, 'rev-list', '--all', '--count')).toBe('5');
+    expect(() => git(cwd, 'cat-file', '-e', first)).toThrow();
+  } finally { pins.dispose(); otherReview.dispose(); }
+}, 20_000);
+
+test('rollback survives garbage collection and repeated stop hooks without retaining all older turns', async () => {
+  const cwd = repo();
+  await captureReviewTurn('start', cwd, session, 'first');
+  writeFileSync(join(cwd, 'file.txt'), 'first\n');
+  await captureReviewTurn('stop', cwd, session, 'first');
+  const first = await readReviewTurn(cwd, session);
+  await captureReviewTurn('start', cwd, session, 'second');
+  writeFileSync(join(cwd, 'file.txt'), 'preview\n');
+  await captureReviewTurn('review', cwd, session);
+  git(cwd, 'gc', '--prune=now');
+  writeFileSync(join(cwd, 'file.txt'), 'first\n');
+  await captureReviewTurn('stop', cwd, session, 'second');
+  expect(await readReviewTurn(cwd, session)).toBe(first);
+  writeFileSync(join(cwd, 'file.txt'), 'resumed\n');
+  await captureReviewTurn('stop', cwd, session, 'second');
+  writeFileSync(join(cwd, 'file.txt'), 'first\n');
+  await captureReviewTurn('stop', cwd, session, 'second');
+  expect(await readReviewTurn(cwd, session)).toBe(first);
+});
+
+for (const chained of [false, true]) test(`upgrading preserves ${chained ? 'chained' : 'single-turn'} legacy snapshots used by pre-pin reviews`, async () => {
+  const cwd = repo();
+  await captureReviewTurn('start', cwd, session, 'first');
+  writeFileSync(join(cwd, 'file.txt'), 'first\n');
+  await captureReviewTurn('stop', cwd, session, 'first');
+  const first = (await readReviewTurn(cwd, session))!;
+  const latestRef = git(cwd, 'for-each-ref', '--format=%(refname)', 'refs/plannotator/turns').split('\n').find(name => name.endsWith('/latest'))!;
+  // Reproduce the old format: every baseline parents the preceding result.
+  const tree = git(cwd, 'rev-parse', `${first}^{tree}`);
+  const oldBaseline = git(cwd, 'commit-tree', tree, '-p', first, '-m', 'old baseline');
+  const legacy = chained ? git(cwd, 'commit-tree', tree, '-p', oldBaseline, '-m', 'old result') : first;
+  git(cwd, 'update-ref', latestRef, legacy);
+  git(cwd, 'update-ref', '-d', latestRef.replace('/latest', '/bounded'));
+  for (let turn = 0; turn < 4; turn++) {
+    await captureReviewTurn('start', cwd, session, `new-${turn}`);
+    writeFileSync(join(cwd, 'file.txt'), `new ${turn}\n`);
+    await captureReviewTurn('stop', cwd, session, `new-${turn}`);
+  }
+  git(cwd, 'gc', '--prune=now');
+  expect(git(cwd, 'rev-parse', latestRef.replace('/latest', '/legacy'))).toBe(legacy);
+  expect(git(cwd, 'diff', `${first}^`, first)).toContain('+first');
+  expect(git(cwd, 'rev-list', '--count', (await readReviewTurn(cwd, session))!)).toBe('2');
+}, 20_000);
 
 test('native review launch advertises the turn as an immutable selectable diff with both file sides', async () => {
   const { prepareLocalReviewDiff, runVcsDiff, getVcsFileContentsForDiff } = await import('../server/vcs');

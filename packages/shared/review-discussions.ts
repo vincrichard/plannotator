@@ -1,13 +1,10 @@
+import type { ReadOnlyFork } from './read-only-fork';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ReviewDiscussion, ReviewDiscussionAnchor, ReviewDiscussionsSnapshot } from '@plannotator/core/review-discussions';
 import { validateAnnotationPatch } from './external-annotation';
 import { callFlowInstallOriginAllowed } from './call-flow-install';
 
-export interface DiscussionAgent {
-  answer(prompt: string, signal: AbortSignal, onActivity?: () => void): Promise<{ sessionId: string; text: string }>;
-  dispose(): void;
-}
 interface StoredThread extends ReviewDiscussion { forkId?: string; context: string; cwd: string }
 interface Options {
   file: string;
@@ -18,7 +15,7 @@ interface Options {
   getSnapshotId(): string;
   getContext(): { snapshotId: string; patch: string; description: string; cwd: string };
   isDecided(): boolean;
-  createAgent(options: { cwd: string; sessionId?: string; onSessionId(id: string): void }): DiscussionAgent;
+  createAgent(options: { cwd: string; sessionId?: string; onSessionId(id: string): void }): ReadOnlyFork;
 }
 const BASE = '/api/review-discussions';
 const ID = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -47,7 +44,7 @@ export function createReviewDiscussions(options: Options) {
   let threads: StoredThread[] = [];
   let version = 0;
   let stopped = false;
-  const running = new Map<string, { controller: AbortController; agent: DiscussionAgent }>();
+  const running = new Map<string, { controller: AbortController; agent: ReadOnlyFork }>();
   try {
     const saved = JSON.parse(readFileSync(options.file, 'utf8'));
     if (!object(saved) || saved.serverSession !== options.serverSession || !Array.isArray(saved.threads)) throw new Error('Invalid discussion store');
@@ -84,7 +81,7 @@ export function createReviewDiscussions(options: Options) {
     const controller = new AbortController();
     thread.activity = { startedAt: Date.now() };
     version++;
-    let agent: DiscussionAgent;
+    let agent: ReadOnlyFork;
     try { agent = options.createAgent({ cwd: thread.cwd, sessionId: thread.forkId, onSessionId(id) {
       if (controller.signal.aborted) return;
       thread.forkId = id;

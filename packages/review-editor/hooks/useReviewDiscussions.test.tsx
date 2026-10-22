@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ReviewDiscussionsProvider, useReviewDiscussionState, useDiscussionCommentRecovery, mergeDiscussionComments } from './useReviewDiscussions';
@@ -127,21 +127,92 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(Object.values(discussions.failedQuestions)[0].text).toBe('Keep this question');
   });
 
-  test('retry after a lost response reuses message identity and echoes the server-session guard', async () => {
+  test('reloading after a lost response does not repeat accepted follow-up work', async () => {
     const bodies: Record<string, unknown>[] = [];
+    const accepted = new Set<unknown>();
     let fail = true;
     await render(async (_url, options) => {
       if (!options) return Response.json({ supported: true, available: true, threads: [] });
-      bodies.push(JSON.parse(String(options.body)));
+      const body = JSON.parse(String(options.body));
+      bodies.push(body);
+      // The server deduplicates by message ID before starting another answer.
+      accepted.add(body.id);
       if (fail) { fail = false; throw new Error('Connection lost after acceptance'); }
       return Response.json({ ok: true });
     });
+    await act(async () => discussions.setDraft('thread', 'Follow up'));
     await act(async () => { try { await discussions.send('thread', 'Follow up'); } catch {} });
-    await act(async () => { await discussions.send('thread', 'Follow up'); });
+    await act(async () => root!.unmount()); root = createRoot(host!);
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    await act(async () => { await discussions.send('thread', discussions.drafts.thread); });
+    expect(accepted.size).toBe(1);
     expect(bodies[0].id).toBe(bodies[1].id);
     expect(bodies[1].serverSession).toBe('discussion-test');
-    await act(async () => { await discussions.send('thread', 'Next question'); });
+    await act(async () => root!.unmount()); root = createRoot(host!);
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    await act(async () => { await discussions.send('thread', 'Follow up'); });
+    expect(accepted.size).toBe(2);
     expect(bodies[2].id).not.toBe(bodies[1].id);
+  });
+
+  test('edited retries get their own identity and remain scoped to the review session', async () => {
+    const bodies: { id: string; text: string }[] = [];
+    await render(async (_url, options) => {
+      if (!options) return Response.json({ supported: true, available: true, threads: [] });
+      bodies.push(JSON.parse(String(options.body)));
+      throw new Error('Response lost');
+    });
+    const send = async (text: string) => { await act(async () => { try { await discussions.send('thread', text); } catch {} }); };
+    await send('First question');
+    await send('Edited question');
+    expect(bodies[0].id).not.toBe(bodies[1].id);
+    adoptServerSession('different-review');
+    await act(async () => root!.render(<Harness snapshot="snapshot-two" />));
+    await send('Edited question');
+    expect(bodies[2].id).not.toBe(bodies[1].id);
+    adoptServerSession('discussion-test');
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    await send('Edited question');
+    expect(bodies[3].id).toBe(bodies[1].id);
+  });
+
+  test('retries keep their in-memory identity when browser storage is unavailable', async () => {
+    const bodies: { id: string }[] = [];
+    const read = spyOn(sessionStorage, 'getItem').mockImplementation(() => { throw new Error('Storage blocked'); });
+    const write = spyOn(sessionStorage, 'setItem').mockImplementation(() => { throw new Error('Storage blocked'); });
+    try {
+      await render(async (_url, options) => {
+        if (!options) return Response.json({ supported: true, available: true, threads: [] });
+        bodies.push(JSON.parse(String(options.body)));
+        if (bodies.length === 1) throw new Error('Response lost');
+        return Response.json({ ok: true });
+      });
+      await act(async () => { try { await discussions.send('thread', 'Follow up'); } catch {} });
+      await act(async () => { await discussions.send('thread', 'Follow up'); });
+      expect(bodies[0].id).toBe(bodies[1].id);
+    } finally { read.mockRestore(); write.mockRestore(); }
+  });
+
+  test('a late acknowledgement does not discard a newer failed follow-up identity', async () => {
+    const bodies: { id: string; text: string }[] = [];
+    let acknowledge!: () => void;
+    const response = new Promise<void>(resolve => { acknowledge = resolve; });
+    await render(async (_url, options) => {
+      if (!options) return Response.json({ supported: true, available: true, threads: [] });
+      bodies.push(JSON.parse(String(options.body)));
+      if (bodies.length === 1) await response;
+      else if (bodies.length === 2) throw new Error('Response lost');
+      return Response.json({ ok: true });
+    });
+    let first!: Promise<void>;
+    await act(async () => { first = discussions.send('thread', 'First question'); });
+    await act(async () => { try { await discussions.send('thread', 'Edited question'); } catch {} });
+    await act(async () => { acknowledge(); await first; });
+    await act(async () => root!.unmount()); root = createRoot(host!);
+    await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
+    await act(async () => { await discussions.send('thread', 'Edited question'); });
+    expect(bodies[2].id).toBe(bodies[1].id);
+    expect(bodies[2].id).not.toBe(bodies[0].id);
   });
 
   test('retrying a question in the inline composer reuses its identity after a lost response', async () => {

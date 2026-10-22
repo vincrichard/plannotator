@@ -142,6 +142,7 @@ function makeFetch(initialDiffType: string): typeof fetch {
     }
     if (url.pathname === "/api/commits") return Response.json(COMMITS_PAGE);
     if (url.pathname === "/api/diff/fresh") return Response.json({ fresh: true });
+    if (url.pathname === "/api/review-discussions") return Response.json({ supported: false, available: false, snapshotId: "", version: 0, threads: [] });
     if (url.pathname === "/api/ai/capabilities") return Response.json({ available: false, providers: [] });
     if (url.pathname === "/api/draft") return Response.json({ error: "Not found" }, { status: 404 });
     return Response.json({});
