@@ -9,7 +9,7 @@ interface StoredThread extends ReviewDiscussion { forkId?: string; context: stri
 interface Options {
   file: string;
   serverSession: string;
-  provider?: 'codex' | 'claude';
+  provider?: 'codex' | 'claude' | 'opencode';
   supported?: boolean;
   unavailableReason?: string;
   getSnapshotId(): string;

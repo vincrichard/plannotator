@@ -119,6 +119,7 @@ describe("handleReviewCommand open state (--base / --diff-type)", () => {
 
     expect(startReviewServerMock).toHaveBeenCalledTimes(1);
     const options = startReviewServerMock.mock.calls[0]?.[0];
+    expect(options.opencodeSessionId).toBe("session-123");
     expect(options.initialBase).toBe("develop");
     expect(options.initialBaseExplicit).toBe(true);
     expect(options.openStatePinned).toBe(true);

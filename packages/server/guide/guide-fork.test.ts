@@ -16,14 +16,34 @@ const originalPath = process.env.PATH;
 const dirs: string[] = [];
 afterEach(() => { process.env.PATH = originalPath; for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture(provider: 'codex' | 'claude', mode: 'success' | 'failure' | 'pending' | 'malformed' = 'success') {
+function fixture(provider: 'codex' | 'claude' | 'opencode', mode: 'success' | 'failure' | 'pending' | 'malformed' = 'success') {
   const cwd = mkdtempSync(join(tmpdir(), 'guide-fork-')); dirs.push(cwd);
   const text = mode === 'malformed' ? 'broken guide JSON' : output;
+  const parentSessionId = provider === 'opencode' ? 'ses_guideParent' : parentId;
   writeFileSync(join(cwd, provider), `#!/usr/bin/env node
 const fs = require('node:fs');
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 fs.appendFileSync('argv.jsonl', JSON.stringify(process.argv.slice(2))+'\\n');
-${provider === 'claude' ? `
+${provider === 'opencode' ? `
+const [, method, route] = process.argv.slice(2);
+const bodyIndex = process.argv.indexOf('--data');
+const body = bodyIndex < 0 ? {} : JSON.parse(process.argv[bodyIndex + 1]);
+if (route.endsWith('/fork')) {
+ ${mode === 'failure' ? `console.error('Parent session unavailable'); process.exit(1);` : ''}
+ fs.rmSync('prompt.txt', {force:true});
+ send({data:{id:'ses_guideFork',fork:{sessionID:'${parentSessionId}'}}});
+} else if (method.toLowerCase() === 'patch') {
+ fs.writeFileSync('permissions.json',JSON.stringify(body.permissions)); send({});
+} else if (route.includes('/message?')) {
+ send({data:fs.existsSync('prompt.txt') ? [
+  {id:'msg_idle',type:'idle',outcome:'succeeded'},
+  {id:'msg_answer',type:'assistant',time:{completed:1},finish:'stop',content:[{type:'text',text:${JSON.stringify(text)}}]},
+  {id:'msg_question',type:'user'},
+ ] : [], cursor:{}});
+} else if (route.endsWith('/prompt')) {
+ fs.writeFileSync('prompt.txt',body.text); send({data:{id:'msg_question',sessionID:'ses_guideFork'}});
+} else send({data:{id:'ses_guideFork',fork:{sessionID:'${parentSessionId}'},permissions:JSON.parse(fs.readFileSync('permissions.json','utf8'))}});
+` : provider === 'claude' ? `
 let prompt=''; process.stdin.on('data', chunk=>prompt+=chunk);
 process.stdin.on('end',()=>{
  fs.writeFileSync('prompt.txt',prompt);
@@ -49,7 +69,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   writeFileSync(join(cwd, 'node'), `#!/bin/sh\nexec '${Bun.which('node')}' "$@"\n`, { mode: 0o700 });
   process.env.PATH = cwd;
   const guide = createGuideSession();
-  const parent = { provider, sessionId: parentId, cwd };
+  const parent = { provider, sessionId: parentSessionId, cwd };
   const handler = createAgentJobHandler({ mode: 'review', getServerUrl: () => 'http://localhost', getCwd: () => cwd,
     guideForkProvider: provider,
     buildCommand: async (_provider, config) => ({
@@ -83,7 +103,7 @@ async function terminal(handler: ReturnType<typeof createAgentJobHandler>, id: s
   throw new Error('Guide did not finish');
 }
 
-for (const provider of ['codex', 'claude'] as const) test(`${provider} guide inherits parent and validates final output through normal job ingestion`, async () => {
+for (const provider of ['codex', 'claude', 'opencode'] as const) test(`${provider} guide inherits parent and validates final output through normal job ingestion`, async () => {
   const { cwd, guide, handler } = fixture(provider);
   try {
     const id = await launch(handler);
@@ -100,15 +120,16 @@ for (const provider of ['codex', 'claude'] as const) test(`${provider} guide inh
       expect(calls).not.toContain('thread/start'); expect(calls).not.toContain('thread/resume');
     } else {
       const args = readFileSync(join(cwd, 'argv.jsonl'), 'utf8');
-      expect(args).toContain('--fork-session'); expect(args).toContain(parentId);
+      if (provider === 'claude') { expect(args).toContain('--fork-session'); expect(args).toContain(parentId); }
+      else { expect(args).toContain('/api/session/ses_guideParent/fork'); expect(args).toContain('/api/session/ses_guideFork/prompt'); }
     }
     // Regenerating forks the launching session afresh, not the earlier guide's fork.
     expect((await terminal(handler, await launch(handler))).status).toBe('done');
   } finally { handler.killAll(); }
 });
 
-test('unavailable parent fails visibly without a context-free fallback', async () => {
-  const { handler, guide } = fixture('codex', 'failure');
+for (const provider of ['codex', 'opencode'] as const) test(`${provider}: unavailable parent fails visibly without a context-free fallback`, async () => {
+  const { handler, guide } = fixture(provider, 'failure');
   try {
     const id = await launch(handler);
     expect((await terminal(handler, id)).error).toContain('Parent session unavailable');

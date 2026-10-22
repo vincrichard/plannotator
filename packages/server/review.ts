@@ -267,6 +267,8 @@ export interface ReviewServerOptions {
   onReady?: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
   /** OpenCode client for querying available agents (OpenCode only) */
   opencodeClient?: OpencodeClient;
+  /** Explicit invoking session for embedded OpenCode launches; never mutate process-wide identity. */
+  opencodeSessionId?: string;
   /** PR metadata when reviewing a pull request (PR mode) */
   prMetadata?: PRMetadata;
   /** Platform review writer override used by isolated runtime tests. */
@@ -1334,7 +1336,9 @@ export async function startReviewServer(
   };
 
   const isRemote = isRemoteSession();
-  const discussionParent = discoverForkParent(process.env, resolveAgentCwd());
+  const discussionParent = discoverForkParent(options.opencodeSessionId !== undefined ? {
+    ...process.env, PLANNOTATOR_DISCUSSION_PROVIDER: 'opencode', PLANNOTATOR_DISCUSSION_SESSION_ID: options.opencodeSessionId,
+  } : process.env, resolveAgentCwd());
   const guideParent = !isRemote && !options.tailnetPublished ? discussionParent : null;
   const agentJobs = createAgentJobHandler({
     guideForkProvider: guideParent?.provider,
@@ -2033,12 +2037,12 @@ export async function startReviewServer(
     serverSession,
     provider: discussionParent?.provider,
     supported: !isRemote && !options.tailnetPublished && !isStaticPatchMode && !isPRMode
-      && (!!discussionParent || origin === 'codex' || origin === 'claude-code'),
+      && (!!discussionParent || origin === 'codex' || origin === 'claude-code' || origin === 'opencode'),
     getSnapshotId: currentSnapshotId,
     unavailableReason: !aiEnabled ? 'AI is disabled for this review.'
       : isRemote || options.tailnetPublished ? 'Discussion forks require a local review session.'
       : isStaticPatchMode || isPRMode ? 'Discussion forks currently support local repository reviews.'
-      : !discussionParent ? 'Launch this review from a Codex or Claude session to ask its fork.' : undefined,
+      : !discussionParent ? 'Launch this review from a Codex, Claude Code, or OpenCode session to ask its fork.' : undefined,
     getContext: () => ({ snapshotId: currentSnapshotId(), patch: currentPatch, description: buildCurrentAiReviewContext() ?? `Repository: ${resolveAgentCwd()}\nReview mode: ${currentDiffType}\nBase: ${currentBase}`, cwd: resolveAgentCwd() }),
     isDecided: () => reviewDecided,
     createAgent: ({ cwd, ...agentOptions }) => createReadOnlyFork({ ...discussionParent!, cwd }, {

@@ -42,6 +42,18 @@ test('parent discovery never guesses or falls back from invalid explicit identit
   expect(discoverForkParent({ CODEX_THREAD_ID: '--last' }, '/repo')).toBeNull();
 });
 
+test('OpenCode discovery uses the launching session and refuses invalid explicit identity', () => {
+  const sessionId = 'ses_launchingSession';
+  expect(discoverForkParent({ OPENCODE_SESSION_ID: sessionId }, '/repo')).toEqual({ provider: 'opencode', sessionId, cwd: '/repo' });
+  expect(discoverForkParent({ PLANNOTATOR_DISCUSSION_PROVIDER: 'opencode', PLANNOTATOR_DISCUSSION_SESSION_ID: sessionId }, '/repo'))
+    .toEqual({ provider: 'opencode', sessionId, cwd: '/repo' });
+  expect(discoverForkParent({ OPENCODE_SESSION_ID: sessionId, PLANNOTATOR_DISCUSSION_PROVIDER: 'opencode' }, '/repo')).toBeNull();
+  for (const invalid of [parentId, 'ses_../parent', 'ses_parent?query', '--last', '']) {
+    expect(discoverForkParent({ OPENCODE_SESSION_ID: invalid }, '/repo')).toBeNull();
+    expect(discoverForkParent({ OPENCODE_SESSION_ID: sessionId, PLANNOTATOR_DISCUSSION_PROVIDER: 'opencode', PLANNOTATOR_DISCUSSION_SESSION_ID: invalid }, '/repo')).toBeNull();
+  }
+});
+
 test('fork once and resume fork with read-only policy; only completed final answer is returned', async () => {
   const fixture = fake(rpc());
   let persisted: string | undefined;
@@ -185,4 +197,156 @@ for (const provider of ['codex', 'claude'] as const) test(`${provider} process e
   try {
     await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('exited');
   } finally { agent.dispose(); }
+});
+
+
+const opencodeParent = 'ses_parent';
+const opencodeChild = 'ses_child';
+const readPermissions = [
+  { action: '*', resource: '*', effect: 'deny' },
+  ...['read', 'glob', 'grep'].map(action => ({ action, resource: '*', effect: 'allow' })),
+];
+function fakeOpenCode(mode = 'success') {
+  return fake(`
+const fs = require('node:fs');
+const [api, method, path, flag, body] = process.argv.slice(2);
+const input = body ? JSON.parse(body) : undefined;
+fs.appendFileSync('calls.jsonl',JSON.stringify({api,method,path,input})+'\\n');
+const emit = value => process.stdout.write(JSON.stringify(value));
+const mode = ${JSON.stringify(mode)};
+const child = '${opencodeChild}', parent = '${opencodeParent}';
+if (path.endsWith('/fork')) {
+  if (mode === 'unavailable') { console.error('Parent session unavailable'); process.exit(1); }
+  if (mode === 'startup-timeout') { fs.writeFileSync('started',''); setInterval(()=>{},1000); }
+  else emit({data:{id:mode === 'same-parent' ? parent : child,parentID:'ses_ancestor',fork:{sessionID:mode === 'wrong-parent' ? 'ses_other' : parent}}});
+} else if (method === 'patch') {
+  fs.writeFileSync('permissions.json', JSON.stringify(input.permissions));
+} else if (path === '/api/session/'+child && method === 'get') {
+  emit({data:{id:child,parentID:'ses_ancestor',fork:{sessionID:parent},permissions:mode === 'unsafe-permissions' ? [] : JSON.parse(fs.readFileSync('permissions.json','utf8'))}});
+} else if (path.endsWith('/prompt')) {
+  const count = fs.existsSync('question') ? Number(fs.readFileSync('question','utf8'))+1 : 1;
+  fs.writeFileSync('question', String(count));
+  const acknowledge = () => emit({data:{id:'msg_question'+count,sessionID:child}});
+  if (mode === 'delayed-admission') {
+    const timer = setInterval(() => { if (!fs.existsSync('acknowledge')) return; clearInterval(timer); acknowledge(); }, 10);
+  } else acknowledge();
+} else if (path.endsWith('/interrupt')) {
+  emit({data:{interrupted:true}});
+} else if (path.includes('/message?')) {
+  const count = fs.existsSync('question') ? Number(fs.readFileSync('question','utf8')) : 0;
+  const answer = {id:'msg_answer'+count,type:'assistant',time:{completed:1},finish:'stop',content:[
+    {type:'reasoning',text:'PRIVATE THOUGHT'}, {type:'text',text:'Final answer '+count}]};
+  const question = {id:'msg_question'+count,type:'user'};
+  if (count && mode === 'poll-failure') { console.error('Transport disconnected'); process.exit(1); }
+  if (!count) emit({data:[{id:'msg_inherited',type:'assistant',content:[{type:'text',text:'Inherited answer'}]}],cursor:{}});
+  else if (mode === 'pending' && !fs.existsSync('finish')) emit({data:[{...answer,finish:undefined,time:{},content:[{type:'reasoning',text:'PRIVATE THOUGHT'}]},question],cursor:{}});
+  else if (mode === 'failure') emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'failed',error:{message:'Provider unavailable'}},answer,question],cursor:{}});
+  else if (mode === 'foreign-question') emit({data:[{id:'msg_intruder',type:'user'},answer,question],cursor:{}});
+  else if (mode === 'pagination' && !path.includes('cursor=')) emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'succeeded'},answer],cursor:{next:'older page'}});
+  else if (mode === 'pagination') emit({data:[question],cursor:{}});
+  else emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'succeeded'},answer,question],cursor:{}});
+} else { console.error('Unexpected command: '+JSON.stringify(process.argv));process.exit(2); }
+`);
+}
+function openCodeCalls(cwd: string): { api: string; method: string; path: string; input?: Record<string, unknown> }[] {
+  return readFileSync(join(cwd, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+}
+
+test('OpenCode locks a native fork before prompting, resumes it and returns only completed final text', async () => {
+  const fixture = fakeOpenCode();
+  let persisted: string | undefined;
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, {
+    ...fixture, onSessionId: id => { persisted = id; },
+  });
+  try {
+    expect(await agent.answer('why?', new AbortController().signal)).toEqual({ sessionId: opencodeChild, text: 'Final answer 1' });
+    expect(persisted).toBe(opencodeChild);
+    expect((await agent.answer('followup', new AbortController().signal)).text).toBe('Final answer 2');
+    const calls = openCodeCalls(fixture.cwd);
+    expect(calls.filter(call => call.path.endsWith('/fork'))).toHaveLength(1);
+    expect(calls.filter(call => call.method === 'patch').map(call => call.input?.permissions)).toEqual([readPermissions, readPermissions]);
+    const prompts = calls.filter(call => call.path.endsWith('/prompt'));
+    expect(prompts.map(call => call.path)).toEqual([`/api/session/${opencodeChild}/prompt`, `/api/session/${opencodeChild}/prompt`]);
+    expect(prompts.map(call => call.input?.text)).toEqual([`${instructions}\n\nwhy?`, `${instructions}\n\nfollowup`]);
+    expect(calls.findIndex(call => call.method === 'patch')).toBeLessThan(calls.findIndex(call => call.path.endsWith('/prompt')));
+    expect(calls.every(call => call.api === 'api')).toBe(true);
+  } finally { agent.dispose(); }
+});
+
+for (const mode of ['same-parent', 'wrong-parent', 'unsafe-permissions', 'unavailable']) test(`OpenCode ${mode} fails closed before a prompt`, async () => {
+  const fixture = fakeOpenCode(mode);
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  try {
+    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow();
+    const calls = openCodeCalls(fixture.cwd);
+    expect(calls.some(call => call.path.endsWith('/prompt') || call.path.endsWith('/interrupt'))).toBe(false);
+  } finally { agent.dispose(); }
+});
+
+test('OpenCode follows message pages to its question and never returns an inherited answer', async () => {
+  const fixture = fakeOpenCode('pagination');
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  try {
+    expect((await agent.answer('why?', new AbortController().signal)).text).toBe('Final answer 1');
+    expect(openCodeCalls(fixture.cwd).some(call => call.path.includes('cursor=older%20page'))).toBe(true);
+  } finally { agent.dispose(); }
+});
+
+test('OpenCode silence stays pending, unchanged polls do not invent activity, cancellation interrupts only its fork', async () => {
+  const fixture = fakeOpenCode('pending');
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  const controller = new AbortController();
+  let activity = 0, settled = false;
+  const timers = shortTimeouts();
+  try {
+    const answer = agent.answer('why?', controller.signal, () => { activity++; }).finally(() => { settled = true; });
+    const caught = answer.catch(error => error);
+    await until(() => existsSync(join(fixture.cwd, 'question')));
+    await new Promise(resolve => realSetTimeout(resolve, 150));
+    const before = activity;
+    await new Promise(resolve => realSetTimeout(resolve, 1100));
+    expect(activity).toBe(before);
+    expect(settled).toBe(false);
+    controller.abort(new Error('Reviewer cancelled this answer'));
+    expect((await caught).message).toBe('Reviewer cancelled this answer');
+    expect(openCodeCalls(fixture.cwd).filter(call => call.path.endsWith('/interrupt')).map(call => call.path))
+      .toEqual([`/api/session/${opencodeChild}/interrupt`]);
+  } finally { agent.dispose(); timers.mockRestore(); }
+});
+
+test('OpenCode cancellation waits for prompt admission before interrupting its child', async () => {
+  const fixture = fakeOpenCode('delayed-admission');
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  const controller = new AbortController();
+  try {
+    const answer = agent.answer('why?', controller.signal).catch(error => error);
+    await until(() => existsSync(join(fixture.cwd, 'question')));
+    controller.abort(new Error('Cancelled during admission'));
+    await new Promise(resolve => realSetTimeout(resolve, 50));
+    expect(openCodeCalls(fixture.cwd).some(call => call.path.endsWith('/interrupt'))).toBe(false);
+    writeFileSync(join(fixture.cwd, 'acknowledge'), '');
+    expect((await answer).message).toBe('Cancelled during admission');
+    expect(openCodeCalls(fixture.cwd).filter(call => call.path.endsWith('/interrupt')).map(call => call.path))
+      .toEqual([`/api/session/${opencodeChild}/interrupt`]);
+  } finally { agent.dispose(); }
+});
+
+for (const mode of ['failure', 'foreign-question', 'poll-failure']) test(`OpenCode ${mode} does not publish partial text`, async () => {
+  const fixture = fakeOpenCode(mode);
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  try {
+    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow(mode === 'failure' ? 'Provider unavailable' : mode === 'poll-failure' ? 'Transport disconnected' : 'another question');
+    expect(openCodeCalls(fixture.cwd).filter(call => call.path.endsWith('/interrupt')).map(call => call.path))
+      .toEqual([`/api/session/${opencodeChild}/interrupt`]);
+  } finally { agent.dispose(); }
+});
+
+test('OpenCode startup remains bounded without sending a prompt', async () => {
+  const fixture = fakeOpenCode('startup-timeout');
+  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
+  const timers = shortTimeouts();
+  try {
+    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('OpenCode');
+    expect(openCodeCalls(fixture.cwd).some(call => call.path.endsWith('/prompt'))).toBe(false);
+  } finally { agent.dispose(); timers.mockRestore(); }
 });

@@ -23,7 +23,7 @@ export interface GuideLaunchState {
   /** Claude / Codex model catalogs (discovered from the installed CLIs). */
   catalogs: ModelCatalogs;
   guideAvailable: boolean;
-  forkProvider?: "claude" | "codex";
+  forkProvider?: "claude" | "codex" | "opencode";
   availableEngines: ReviewEngine[];
   /** Effective engine: the persisted choice, snapped to an available one. */
   engine: ReviewEngine;

@@ -97,7 +97,7 @@ export interface AgentJobHandlerOptions {
   /** Returns the working directory for spawned processes. */
   getCwd: () => string;
   /** A known session makes guide generation use a fork of that provider. */
-  guideForkProvider?: "claude" | "codex";
+  guideForkProvider?: "claude" | "codex" | "opencode";
   /**
    * Build the command server-side for a given provider.
    * Return an object with the command to spawn (and optional output path for result ingestion).

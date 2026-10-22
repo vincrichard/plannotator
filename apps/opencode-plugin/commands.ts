@@ -294,6 +294,7 @@ export async function handleReviewCommand(
     approvalNotesSupported: Boolean(sessionId),
     htmlContent: reviewHtmlContent,
     opencodeClient: client,
+    opencodeSessionId: sessionId ?? '',
     onReady: (url, isRemote, port) => {
       handleReviewServerReady(url, isRemote, port);
       announceSessionUrl(client, "code review", url);

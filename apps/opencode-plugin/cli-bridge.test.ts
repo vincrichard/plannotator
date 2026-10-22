@@ -20,6 +20,37 @@ import { OpenCodePromptDeliveryError } from "./prompt-delivery-error";
 import { parseAnnotateArgs } from "@plannotator/shared/annotate-args";
 
 describe("OpenCode CLI bridge helpers", () => {
+  test.skipIf(process.platform === "win32")("review children inherit their invoking OpenCode session instead of ambient parent identity", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "plannotator-opencode-parent-"));
+    const binary = path.join(root, "cli.ts");
+    const captured = path.join(root, "sessions.jsonl");
+    const before = { bin: process.env.PLANNOTATOR_BIN, provider: process.env.PLANNOTATOR_DISCUSSION_PROVIDER, id: process.env.PLANNOTATOR_DISCUSSION_SESSION_ID };
+    writeFileSync(binary, `#!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+await Bun.stdin.text();
+appendFileSync(${JSON.stringify(captured)}, JSON.stringify([process.env.PLANNOTATOR_DISCUSSION_PROVIDER, process.env.PLANNOTATOR_DISCUSSION_SESSION_ID])+"\\n");
+console.log(JSON.stringify({ decision: "annotated", feedback: "done" }));
+`, { mode: 0o755 });
+    const client = { app: { log: mock(() => {}) }, session: { prompt: mock(async () => ({})) } };
+    try {
+      process.env.PLANNOTATOR_BIN = binary;
+      process.env.PLANNOTATOR_DISCUSSION_PROVIDER = 'codex';
+      process.env.PLANNOTATOR_DISCUSSION_SESSION_ID = 'ambient-parent';
+      await Promise.all(['ses_one', 'ses_two'].map(sessionId => handleCliCommand({
+        command: 'plannotator-review', client, sessionId, cwd: root, rawArgs: '',
+      })));
+      expect(readFileSync(captured, 'utf8').trim().split('\n').map(line => JSON.parse(line)).sort()).toEqual([
+        ['opencode', 'ses_one'], ['opencode', 'ses_two'],
+      ]);
+      expect(process.env.PLANNOTATOR_DISCUSSION_SESSION_ID).toBe('ambient-parent');
+    } finally {
+      for (const [name, value] of Object.entries({ PLANNOTATOR_BIN: before.bin, PLANNOTATOR_DISCUSSION_PROVIDER: before.provider, PLANNOTATOR_DISCUSSION_SESSION_ID: before.id })) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test.skipIf(process.platform === "win32")("an older CLI refuses directory reviews before opening the caller repo", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "plannotator-review-skew-"));
     mkdirSync(path.join(root, "caller"));

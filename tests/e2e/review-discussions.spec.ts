@@ -8,8 +8,9 @@ import { join, resolve } from 'node:path';
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? '.local/plannotator');
 const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/discussions');
 const parentId = '11111111-1111-4111-8111-111111111111';
+const openCodeParentId = 'ses_review_parent';
 
-async function review(page: Page, answerText?: string, longFile: boolean | 'deleted' = false) {
+async function review(page: Page, answerText?: string, longFile: boolean | 'deleted' = false, provider: 'codex' | 'opencode' = 'codex') {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussions-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -67,11 +68,51 @@ createInterface({input:process.stdin}).on('line', line => {
   send({id,result});
 }).on('close', () => process.exit(0));
 `, { mode: 0o700 });
+  if (provider === 'opencode') writeFileSync(join(root, 'bin', 'opencode'), `#!${process.execPath}
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { join, dirname } = require('node:path');
+const root = dirname(process.cwd());
+const [api, method, path, flag, body] = process.argv.slice(2);
+if (api !== 'api') process.exit(2);
+const input = body ? JSON.parse(body) : undefined;
+appendFileSync(join(root, 'requests.jsonl'), JSON.stringify({method,path,input}) + '\\n');
+const send = value => process.stdout.write(JSON.stringify(value));
+const child = 'ses_review_discussion', parent = '${openCodeParentId}';
+const permissions = join(root, 'permissions.json'), questionFile = join(root, 'question.json');
+if (path === '/api/session/'+parent+'/fork' && method === 'post') {
+  send({data:{id:child,fork:{sessionID:parent}}});
+} else if (path === '/api/session/'+child && method === 'patch') {
+  writeFileSync(permissions, JSON.stringify(input.permissions));
+} else if (path === '/api/session/'+child && method === 'get') {
+  send({data:{id:child,fork:{sessionID:parent},permissions:JSON.parse(readFileSync(permissions,'utf8'))}});
+} else if (path === '/api/session/'+child+'/prompt' && method === 'post') {
+  const count = existsSync(questionFile) ? JSON.parse(readFileSync(questionFile,'utf8')).count+1 : 1;
+  const id = 'msg_question'+count;
+  writeFileSync(questionFile, JSON.stringify({id,count,text:input.text}));
+  send({data:{id,sessionID:child}});
+} else if (path.startsWith('/api/session/'+child+'/message?') && method === 'get') {
+  if (!existsSync(questionFile)) send({data:[],cursor:{}});
+  else {
+    const question = JSON.parse(readFileSync(questionFile,'utf8'));
+    const complete = existsSync(join(root, 'release'));
+    const text = ${answerText === undefined ? "question.text.includes('Explain further') ? 'Completed follow-up answer.' : 'Completed answer for this discussion.'" : JSON.stringify(answerText)};
+    send({data:[
+      ...(complete ? [{id:'msg_idle'+question.count,type:'idle',outcome:'succeeded'}] : []),
+      {id:'msg_answer'+question.count,type:'assistant',time:complete ? {completed:1} : {},
+        ...(complete ? {finish:'stop'} : {}),content:[{type:'reasoning',text:'PRIVATE_REASONING_TEXT'},
+          {type:'text',text:complete ? text : 'PRIVATE_PARTIAL_TEXT'}]},
+      {id:question.id,type:'user'}],cursor:{}});
+  }
+} else if (path === '/api/session/'+child+'/interrupt' && method === 'post') send({data:{interrupted:true}});
+else { console.error('Unexpected OpenCode request: '+JSON.stringify(process.argv)); process.exit(2); }
+`, { mode: 0o700 });
   const ready = join(root, 'ready.jsonl');
   const child = spawn(binary, ['review', repo, '--git', '--diff-type', 'uncommitted', '--no-git-remote-check', '--json'], {
     env: {
       PATH: `${join(root, 'bin')}:${process.env.PATH}`,
-      PLANNOTATOR_DISCUSSION_PROVIDER: 'codex', PLANNOTATOR_DISCUSSION_SESSION_ID: parentId,
+      ...(provider === 'opencode' ? { OPENCODE_SESSION_ID: openCodeParentId } : {
+        PLANNOTATOR_DISCUSSION_PROVIDER: 'codex', PLANNOTATOR_DISCUSSION_SESSION_ID: parentId,
+      }),
       PLANNOTATOR_DATA_DIR: join(root, 'data'), PLANNOTATOR_READY_FILE: ready,
       PLANNOTATOR_SKIP_BROWSER_OPEN: '1', PLANNOTATOR_REMOTE: '0', PLANNOTATOR_PORT: '0',
       PLANNOTATOR_SHARE: 'disabled', PLANNOTATOR_UPDATE_CHECK: '0',
@@ -131,6 +172,66 @@ async function expandThread(thread: Locator) {
 
 test.beforeAll(() => mkdirSync(proofDir, { recursive: true }));
 test.use({ viewport: { width: 1600, height: 1000 }, actionTimeout: 15_000, screenshot: 'only-on-failure' });
+
+test('OpenCode questions persist inline after the popup closes and reuse their fork for follow-ups', async ({ page }, testInfo) => {
+  const session = await review(page, undefined, false, 'opencode');
+  try {
+    await expect.poll(async () => (await snapshot(page)).provider).toBe('opencode');
+    await selectLine(page, page.locator('diffs-container').first(), 2, 'additions');
+    await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+    await page.getByPlaceholder('Ask about this code...').fill('Why does OpenCode change this call?');
+    await page.getByRole('button', { name: 'Ask', exact: true }).click();
+    await expect(page.getByPlaceholder('Ask about this code...')).toHaveCount(0);
+    const thread = page.locator('diffs-container [data-discussion-id]');
+    await expect(thread).toHaveCount(1);
+    await expect(thread).toContainText('Why does OpenCode change this call?');
+    await expect(thread.getByLabel('Follow-up question', { exact: true })).toBeVisible();
+    const id = await thread.getAttribute('data-discussion-id');
+    await expect.poll(() => session.requests().filter(request => request.path.endsWith('/prompt')).length).toBe(1);
+    await page.getByTitle('Annotations', { exact: true }).click();
+    await expect(thread).toBeVisible();
+    await expect(thread).toContainText('Answering');
+    expect((await draft(page)).codeAnnotations ?? []).toEqual([]);
+    expect(JSON.stringify(await snapshot(page))).not.toContain('PRIVATE_');
+    await expect(page.locator('body')).not.toContainText('PRIVATE_');
+
+    session.release();
+    await expect(thread).toContainText('Completed answer for this discussion.');
+    await thread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
+    await thread.getByRole('button', { name: 'Send question', exact: true }).click();
+    await expect(thread).toContainText('Completed follow-up answer.');
+    const state = await snapshot(page);
+    expect(state.threads).toHaveLength(1);
+    expect(state.threads[0].id).toBe(id);
+    expect(state.threads[0].messages).toHaveLength(4);
+    const requests = session.requests();
+    expect(requests.filter(request => request.path.endsWith('/fork'))).toEqual([
+      expect.objectContaining({ method: 'post', path: `/api/session/${openCodeParentId}/fork` }),
+    ]);
+    const prompts = requests.filter(request => request.path.endsWith('/prompt'));
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0].path).toBe(prompts[1].path);
+    expect(prompts[0].path).not.toContain(openCodeParentId);
+    expect(prompts[0].input.text).toContain('Reviewed patch');
+    expect((await draft(page)).codeAnnotations ?? []).toEqual([]);
+    await page.screenshot({ path: join(proofDir, `opencode-inline-thread-${testInfo.project.name}.png`) });
+
+    await thread.getByRole('button', { name: 'Request change', exact: true }).click();
+    await thread.getByLabel('Change request', { exact: true }).fill('Document the OpenCode call change.');
+    await thread.getByRole('button', { name: 'Save change request', exact: true }).click();
+    await expect(thread).toHaveCount(0);
+    await expect.poll(async () => (await draft(page)).codeAnnotations).toEqual([
+      expect.objectContaining({ filePath: 'main.ts', side: 'new', text: 'Document the OpenCode call change.' }),
+    ]);
+    const sent = page.waitForRequest(request => request.url().endsWith('/api/feedback') && request.method() === 'POST');
+    await page.getByRole('button', { name: /^Send feedback/i }).click();
+    const payload = (await sent).postDataJSON();
+    expect(payload.annotations).toHaveLength(1);
+    expect(payload.annotations[0].text).toBe('Document the OpenCode call change.');
+    expect(payload.feedback).not.toMatch(/Why does OpenCode|Explain further|Completed answer|Completed follow-up|PRIVATE_/);
+    await expect.poll(session.output).toContain('Document the OpenCode call change.');
+  } finally { await session.close(); }
+});
 
 for (const mobile of [false, true]) test.describe(`agent opener on ${mobile ? 'phone' : 'desktop'}`, () => {
   test.use({ hasTouch: mobile });

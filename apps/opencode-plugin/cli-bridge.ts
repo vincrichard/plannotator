@@ -1110,6 +1110,10 @@ export async function handleCliCommand(input: {
           ...buildBridgePayload(input.bridge),
         }),
         readyLabel: "code review",
+        extraEnv: {
+          PLANNOTATOR_DISCUSSION_PROVIDER: "opencode",
+          PLANNOTATOR_DISCUSSION_SESSION_ID: input.sessionId,
+        },
         bridge: input.bridge,
         sessionBridge: sessionBridge(),
         observer: launch,

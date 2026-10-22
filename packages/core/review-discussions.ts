@@ -56,7 +56,7 @@ export interface ReviewDiscussion {
 export interface ReviewDiscussionsSnapshot {
   supported: boolean;
   available: boolean;
-  provider?: 'codex' | 'claude';
+  provider?: 'codex' | 'claude' | 'opencode';
   reason?: string;
   snapshotId: string;
   threads: ReviewDiscussion[];

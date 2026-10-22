@@ -63,7 +63,7 @@ printf '// @generated — DO NOT EDIT. Source: packages/shared/read-only-fork.ts
   | cat - "../../packages/shared/read-only-fork.ts" > "generated/read-only-fork-types.ts"
 
 # Vendor review agent modules from packages/server/ — rewrite imports for generated/ layout
-for f in agent-review-message codex-review claude-review review-findings marker-review path-utils review-skill-loader read-only-fork; do
+for f in agent-review-message codex-review claude-review review-findings marker-review path-utils review-skill-loader read-only-fork read-only-fork-opencode; do
   src="../../packages/server/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/server/%s.ts\n' "$f" | cat - "$src" \
     | sed 's|from "./vcs"|from "./review-core.ts"|' \

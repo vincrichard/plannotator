@@ -3,15 +3,18 @@ import { spawn } from 'node:child_process';
 import { CodexAppServerProcess, type RpcMessage } from '../ai/providers/codex-app-server';
 import { guardChildStreams, writeChildLine } from '../ai/providers/child-io';
 import { killWindowsProcessTree } from '../ai/providers/command-path';
+import { opencodeAnswer } from './read-only-fork-opencode';
 
 export interface ForkParent {
-  provider: 'codex' | 'claude';
+  provider: 'codex' | 'claude' | 'opencode';
   sessionId: string;
   cwd: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const OPENCODE_SESSION = /^ses_[a-zA-Z0-9_-]{1,128}$/;
 const STARTUP_TIMEOUT_MS = 2 * 60_000;
+const sessionPattern = (provider: ForkParent['provider']) => provider === 'opencode' ? OPENCODE_SESSION : UUID;
 
 /** Never pick the most recent session: it can belong to another review. */
 export function discoverForkParent(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): ForkParent | null {
@@ -19,7 +22,10 @@ export function discoverForkParent(env: NodeJS.ProcessEnv = process.env, cwd = p
   let sessionId = env.PLANNOTATOR_DISCUSSION_SESSION_ID;
   if (provider === undefined && sessionId === undefined) {
     const claudeTag = env.PLANNOTATOR_SESSION_TAG?.match(/^claude-code:(.+)$/)?.[1];
-    if (claudeTag || env.CLAUDE_CODE_SESSION_ID) {
+    if (env.OPENCODE_SESSION_ID) {
+      provider = 'opencode';
+      sessionId = env.OPENCODE_SESSION_ID;
+    } else if (claudeTag || env.CLAUDE_CODE_SESSION_ID) {
       provider = 'claude';
       sessionId = claudeTag || env.CLAUDE_CODE_SESSION_ID;
     } else if (env.CODEX_THREAD_ID) {
@@ -27,7 +33,7 @@ export function discoverForkParent(env: NodeJS.ProcessEnv = process.env, cwd = p
       sessionId = env.CODEX_THREAD_ID;
     }
   }
-  return (provider === 'codex' || provider === 'claude') && sessionId && UUID.test(sessionId)
+  return (provider === 'codex' || provider === 'claude' || provider === 'opencode') && sessionId && sessionPattern(provider).test(sessionId)
     ? { provider, sessionId, cwd } : null;
 }
 
@@ -41,14 +47,15 @@ export interface ReadOnlyForkOptions {
 }
 
 export function createReadOnlyFork(parent: ForkParent, options: ReadOnlyForkOptions): ReadOnlyFork {
-  if (!UUID.test(parent.sessionId) || (options.sessionId && (!UUID.test(options.sessionId) || options.sessionId === parent.sessionId))) {
+  const pattern = sessionPattern(parent.provider);
+  if (!pattern.test(parent.sessionId) || (options.sessionId && (!pattern.test(options.sessionId) || options.sessionId === parent.sessionId))) {
     throw new Error('Invalid discussion fork identity');
   }
   let sessionId = options.sessionId;
   let active: AbortController | null = null;
   let disposed = false;
   const remember = (id: unknown) => {
-    if (typeof id !== 'string' || !UUID.test(id) || id === parent.sessionId || (sessionId && sessionId !== id)) {
+    if (typeof id !== 'string' || !pattern.test(id) || id === parent.sessionId || (sessionId && sessionId !== id)) {
       throw new Error('Agent did not return the expected separate discussion fork');
     }
     if (!sessionId) {
@@ -69,6 +76,8 @@ export function createReadOnlyFork(parent: ForkParent, options: ReadOnlyForkOpti
       try {
         const text = parent.provider === 'codex'
           ? await codexAnswer(parent, sessionId, `${options.instructions}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity)
+          : parent.provider === 'opencode'
+          ? await opencodeAnswer(parent, sessionId, `${options.instructions}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity)
           : await claudeAnswer(parent, sessionId, `${options.instructions}\n\n${prompt}`, controller.signal, remember, options.executablePath, onActivity);
         controller.signal.throwIfAborted();
         if (!sessionId || !text.trim()) throw new Error('Agent completed without a final answer');

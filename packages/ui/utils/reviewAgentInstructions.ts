@@ -31,7 +31,7 @@ There is no "send" or "done" step — each POST is live the moment it lands.
 
 ## Starting a discussion instead of leaving a regular comment
 
-Use this when the reviewer should be able to reply, resolve the thread, or turn it into a change request. Read GET ${origin}/api/review-discussions first: this requires \`available: true\` and the same local Codex/Claude parent session setup as Ask agent. Unsupported review modes return a reason; do not claim a thread was created if the request fails.
+Use this when the reviewer should be able to reply, resolve the thread, or turn it into a change request. Read GET ${origin}/api/review-discussions first: this requires \`available: true\` and the same local Codex, Claude Code, or OpenCode parent session setup as Ask agent. Unsupported review modes return a reason; do not claim a thread was created if the request fails.
 
 Read GET ${origin}/api/diff for \`serverSession\` and \`snapshotId\` and the reviewed diff. Then POST ${origin}/api/review-discussions with:
 

@@ -147,7 +147,7 @@ export interface AgentCapability {
 
 export interface AgentCapabilities {
   /** Guides inherit this launching session; its private ID is never exposed. */
-  guideForkProvider?: "claude" | "codex";
+  guideForkProvider?: "claude" | "codex" | "opencode";
   mode: "plan" | "review" | "annotate";
   providers: AgentCapability[];
   /** True if at least one provider is available. */
