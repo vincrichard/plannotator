@@ -14,6 +14,12 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   const busy = pending || thread.status === 'answering' || discussions.ended;
   const unread = thread.status === 'answered' && discussions.seen[thread.id] !== thread.updatedAt;
   const awaitingReply = thread.messages.length === 1 && thread.messages[0].role === 'assistant';
+  const latestQuestionIndex = thread.messages.reduce((latest, message, index) => message.role === 'user' ? index : latest, 0);
+  const latestQuestion = thread.messages[latestQuestionIndex];
+  const renderMessage = (message: ReviewDiscussion['messages'][number]) => <div key={message.id}>
+    <div className="text-xs text-muted-foreground">{message.role === 'user' ? 'You' : 'Agent'}</div>
+    <div className="review-comment-body">{renderInlineMarkdown(message.text)}</div>
+  </div>;
   const run = async (action: () => Promise<unknown>) => {
     setPending(true); setError(undefined);
     try { await action(); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -25,13 +31,14 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
       <span className="font-medium">Discussion</span>
       <span className="text-muted-foreground">{thread.status === 'answering' ? 'Answering…' : thread.status === 'answered' ? awaitingReply ? 'Awaiting your reply' : 'Answered' : thread.status === 'resolved' ? 'Resolved' : 'Needs attention'}</span>
       {unread && <span className="text-primary">Unread</span>}
-      <span className="truncate ml-auto">{thread.messages[0]?.text}</span>
+      <span className="truncate ml-auto">{latestQuestion?.text}</span>
     </button>
     {expanded && <div className="mt-3 space-y-3">
-      {thread.messages.map(message => <div key={message.id}>
-        <div className="text-xs text-muted-foreground">{message.role === 'user' ? 'You' : 'Agent'}</div>
-        <div className="review-comment-body">{renderInlineMarkdown(message.text)}</div>
-      </div>)}
+      {latestQuestionIndex > 0 && <details key={latestQuestion.id}>
+        <summary className="cursor-pointer text-xs text-muted-foreground">Previous messages ({latestQuestionIndex})</summary>
+        <div className="mt-3 space-y-3">{thread.messages.slice(0, latestQuestionIndex).map(renderMessage)}</div>
+      </details>}
+      {thread.messages.slice(latestQuestionIndex).map(renderMessage)}
       {(discussions.ended || error || thread.error) && <p role="alert" className="text-xs text-destructive">{discussions.ended ? discussions.error : error ?? thread.error}</p>}
       {!discussions.conversionReady && <p className="text-xs text-muted-foreground">{discussions.conversionUnavailableReason}</p>}
       {readonly && <p className="text-xs text-muted-foreground">This discussion belongs to another review snapshot.</p>}

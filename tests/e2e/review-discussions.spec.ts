@@ -264,6 +264,12 @@ test('questions run separately while reviewing; only converted requests enter pe
     await oldThread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
     await oldThread.getByRole('button', { name: 'Send question', exact: true }).click();
     await expect(oldThread).toContainText('Completed follow-up answer.');
+    await expect(oldThread.getByText('Completed answer for this discussion.', { exact: true })).toBeHidden();
+    await expect(oldThread.getByText('Completed follow-up answer.', { exact: true })).toBeVisible();
+    await oldThread.locator('summary').click();
+    await expect(oldThread.getByText('Completed answer for this discussion.', { exact: true })).toBeVisible();
+    await oldThread.locator('summary').click();
+    await expect(oldThread.getByText('Completed answer for this discussion.', { exact: true })).toBeHidden();
     await page.screenshot({ path: join(proofDir, `discussion-threads-${testInfo.project.name || 'chromium'}.png`) });
     const requests = session.requests();
     expect(requests.filter(request => request.method === 'thread/fork')).toHaveLength(2);
