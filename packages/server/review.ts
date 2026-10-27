@@ -21,6 +21,8 @@ import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { createReviewDiscussions } from "@plannotator/shared/review-discussions";
 import { createReadOnlyFork, discoverForkParent } from "./read-only-fork";
 import { existsSync } from "node:fs";
+import { reviewCheckpointStore } from "./review-checkpoint";
+import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { SingleFlight } from "@plannotator/shared/single-flight";
 import {
   commitFamilyId,
@@ -99,7 +101,7 @@ import { getRepoInfo } from "./repo";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleApiNotFound, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash } from "./draft";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "@plannotator/shared/review-draft";
-import { captureReviewProgress, handleReviewProgress } from "@plannotator/shared/review-progress";
+import { captureReviewProgress, handleReviewProgress, loadReviewProgress, validReviewProgressChanges } from "@plannotator/shared/review-progress";
 import { createEditorAnnotationHandler } from "./editor-annotations";
 import { createExternalAnnotationHandler } from "./external-annotations";
 import { createAgentJobHandler } from "./agent-jobs";
@@ -354,6 +356,20 @@ export interface ReviewServerResult {
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
+  const lifecycle = reviewCheckpointStore();
+  delete process.env.PLANNOTATOR_REVIEW_CHECKPOINT;
+  delete process.env.PLANNOTATOR_REVIEW_ID;
+  const checkpointToken = process.env.PLANNOTATOR_REVIEW_CONTROL_TOKEN;
+  delete process.env.PLANNOTATOR_REVIEW_CONTROL_TOKEN;
+  if (lifecycle && checkpointToken && !/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(checkpointToken)) throw new Error('Invalid review control token');
+  let frozen = lifecycle?.saved ?? null;
+  let suspending = false;
+  let suspended = false;
+  let refreshPending = false;
+  let pendingWrites = 0;
+  if (frozen) options = { ...options, rawPatch: frozen.payload.rawPatch, gitRef: frozen.payload.gitRef,
+    diffType: frozen.payload.diffType, initialBase: frozen.payload.base, initialBaseExplicit: true,
+    initialFileIdentities: frozen.fileIdentities, gitContext: frozen.payload.gitContext, openStatePinned: true };
   const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady } = options;
   // Session-constant capability advert; rides every diff payload (see the
   // option's doc). Absent option = false, so old callers advertise honestly.
@@ -468,7 +484,7 @@ export async function startReviewServer(
   let currentGitRef = options.gitRef;
   let currentDiffType: DiffType | WorkspaceDiffType = options.diffType || workspace?.diffType || "uncommitted";
   let currentError = options.error;
-  let currentHideWhitespace = loadConfig().diffOptions?.hideWhitespace ?? false;
+  let currentHideWhitespace = frozen?.payload.hideWhitespace ?? loadConfig().diffOptions?.hideWhitespace ?? false;
   let originalPRPatch = options.rawPatch;
   let originalPRGitRef = options.gitRef;
   let originalPRError = options.error;
@@ -654,7 +670,7 @@ export async function startReviewServer(
   // PLANNOTATOR_REVIEW_PROGRESS / config.reviewProgress: when off, no snapshot
   // exists, so the endpoint answers `available: false` without touching disk and
   // the client keeps viewed marks in the draft, as for unsupported modes.
-  const captureProgress = () => !resolveReviewProgress(loadConfig()) ? Promise.resolve(null) : captureReviewProgress({
+  const captureProgress = () => frozen ? Promise.resolve(frozen.progress) : !resolveReviewProgress(loadConfig()) ? Promise.resolve(null) : captureReviewProgress({
     patch: currentPatch,
     fileIdentities: currentFileIdentities,
     diffType: currentDiffType,
@@ -852,7 +868,7 @@ export async function startReviewServer(
   // detectRemoteDefaultCompareTarget itself runs an ls-remote, so the opt-out
   // would not be honest if only the staleness probe were suppressed. The base
   // then stays whatever local ref discovery resolved.
-  if (gitContext && !isPRMode && remoteCheckEnabled) {
+  if (!frozen && gitContext && !isPRMode && remoteCheckEnabled) {
     detectRemoteDefaultCompareTarget(gitContext.cwd, sessionVcsType).then(
       async (remote) => {
         if (remote && !baseEverSwitched && currentBase !== remote) {
@@ -1054,7 +1070,7 @@ export async function startReviewServer(
   // itself stays a pure content hash — drafts survive content-identical
   // mode round-trips.
   const currentSnapshotId = (): string =>
-    `${draftKey}:${currentDiffType}${isPRMode ? `:${currentPRDiffScope}` : ""}${currentContextRevision ? `:${currentContextRevision}` : ""}${currentFileIdentities ? `:${contentHash(JSON.stringify(currentFileIdentities))}` : ""}`;
+    frozen?.payload.snapshotId ?? `${draftKey}:${currentDiffType}${isPRMode ? `:${currentPRDiffScope}` : ""}${currentContextRevision ? `:${currentContextRevision}` : ""}${currentFileIdentities ? `:${contentHash(JSON.stringify(currentFileIdentities))}` : ""}`;
 
   // --- Durable feedback archive --------------------------------------------
   //
@@ -2011,7 +2027,7 @@ export async function startReviewServer(
   // Host-only session control (packages/shared/host-control.ts). Closing is
   // the reviewer's Close, marked closedBy "agent", WITHOUT settling the draft
   // or archiving a decision the reviewer never made.
-  const hostControlToken = resolveHostControlToken(options.hostControlToken);
+  const hostControlToken = resolveHostControlToken(options.hostControlToken ?? (lifecycle ? checkpointToken : undefined));
   const unsentReviewComments = (): number => {
     const loaded = reviewDrafts.load(currentDraftKeys());
     return loaded.found ? countUnsentDraftComments(loaded.draft) : 0;
@@ -2033,11 +2049,13 @@ export async function startReviewServer(
   };
 
   const discussions = createReviewDiscussions({
-    file: join(getPlannotatorDataDir(), 'review-discussions', `${serverSession}.json`),
+    file: join(getPlannotatorDataDir(), 'review-discussions', `${lifecycle?.id ?? serverSession}.json`),
+    storageIdentity: lifecycle?.id,
     serverSession,
     provider: discussionParent?.provider,
     supported: !isRemote && !options.tailnetPublished && !isStaticPatchMode && !isPRMode
       && (!!discussionParent || origin === 'codex' || origin === 'claude-code' || origin === 'opencode'),
+    getUnavailableReason: () => frozen ? 'Refresh the saved review before asking the agent about current project files.' : undefined,
     getSnapshotId: currentSnapshotId,
     unavailableReason: !aiEnabled ? 'AI is disabled for this review.'
       : isRemote || options.tailnetPublished ? 'Discussion forks require a local review session.'
@@ -2051,7 +2069,7 @@ export async function startReviewServer(
     }),
   });
   const requestHostGuard = createRequestHostGuard();
-  try { turnPins.retain(gitContext); }
+  try { if (!frozen) turnPins.retain(gitContext); }
   catch (error) { turnPins.dispose(); throw error; }
   const server = await startBunServerOnAvailablePort((port) =>
     Bun.serve({
@@ -2068,6 +2086,107 @@ export async function startReviewServer(
           if (hostRefusal) return hostRefusal;
 
           const url = new URL(req.url);
+          if (lifecycle && req.method !== 'GET' && ['/api/draft', '/api/review-progress', '/api/review-lifecycle/activity'].includes(url.pathname) && req.headers.get('x-plannotator-session') !== serverSession) return Response.json(serverSessionMismatchBody(), { status: 409 });
+          const trackedWrite = req.method !== 'GET' && !url.pathname.startsWith('/api/host/');
+          if (trackedWrite && (suspending || suspended)) return Response.json({ error: 'Review is suspended; resume it before making changes' }, { status: 409 });
+          if (trackedWrite) pendingWrites++;
+          try {
+          if (url.pathname === '/api/host/suspend') {
+            const guard = handleHostControl(new Request(req.url, { headers: req.headers }), new URL('/api/host/status', req.url), {
+              token: hostControlToken, getServerPort: () => boundPort, control: hostControl,
+            });
+            if (guard && guard.status !== 200) return guard;
+            if (req.method !== 'POST') return Response.json({ error: 'Use POST' }, { status: 405 });
+            if (!lifecycle) return Response.json({ error: 'Durable review lifecycle is disabled' }, { status: 404 });
+            if (reviewDecided || suspending || pendingWrites > 0) return Response.json({ error: 'Review is busy or decided' }, { status: 409 });
+            if (isPRMode || workspace || isStaticPatchMode || !gitContext || (sessionVcsType && sessionVcsType !== 'git')) return Response.json({ error: 'Suspension currently supports local Git text reviews only' }, { status: 409 });
+            suspending = true;
+            try {
+              const body = await req.json().catch(() => ({}));
+              const lastActivity = lifecycle.lastActivity();
+              if (typeof body.lastActivityAt === 'number' && lastActivity > body.lastActivityAt) throw new Error('Reviewer activity changed; retry later');
+              if (Date.now() / 1000 - lastActivity < 2) throw new Error('Recent reviewer changes are still saving; wait a moment and retry');
+              const local = async (path: string) => {
+                const response = await fetch(`http://127.0.0.1:${boundPort}${path}`);
+                if (!response.ok) throw new Error(`Could not checkpoint ${path.split('?')[0]}`);
+                return response.json();
+              };
+              // In-memory job/external stores cannot yet be resumed without losing their identities.
+              if (aiRuntime && (await (await aiRuntime.endpoints['/api/ai/sessions'](new Request(req.url))).json()).length) throw new Error('Reviews with Ask AI sessions cannot be suspended yet');
+              const jobsResponse = await fetch(`http://127.0.0.1:${boundPort}/api/agents/jobs`);
+              if (aiEnabled && !jobsResponse.ok) throw new Error('Could not verify agent job state');
+              if (jobsResponse.ok && (await jobsResponse.json()).jobs?.length) throw new Error('Reviews with agent jobs cannot be suspended yet');
+              const external = await local('/api/external-annotations');
+              if (external.annotations?.length) throw new Error('Reviews with external annotations cannot be suspended yet');
+              if (discussions.snapshot().threads.some(thread => thread.status === 'answering')) throw new Error('Wait for the discussion answer before suspending');
+              const snapshotId = currentSnapshotId();
+              if (!frozen) {
+                const latest = await runVcsDiff(currentDiffType as DiffType, currentBase, gitContext.cwd, { hideWhitespace: currentHideWhitespace });
+                if (latest.error || latest.patch !== currentPatch || !(await local('/api/diff/fresh')).fresh) throw new Error('Refresh the changed diff before suspending');
+              }
+              const payload = await local('/api/diff');
+              const files: NonNullable<typeof frozen>['files'] = Object.create(null);
+              let savedBytes = Buffer.byteLength(currentPatch);
+              for (const file of parseDiffToFiles(currentPatch)) {
+                if (isBinaryPatchFile(currentPatch, file.path)) throw new Error('Binary reviews cannot be suspended yet');
+                const query = new URLSearchParams({ path: file.path, snapshot: snapshotId });
+                if (file.oldPath) query.set('oldPath', file.oldPath);
+                const contents = await local(`/api/file-content?${query}`);
+                if (contents.oldContent === null && contents.newContent === null) throw new Error('Could not save file contents; keep the review running');
+                savedBytes += Buffer.byteLength(JSON.stringify(contents));
+                if (savedBytes > 64 * 1024 * 1024) throw new Error('Review checkpoint exceeds 64 MiB; keep the review running');
+                files[file.path] = contents;
+              }
+              if (!frozen && !(await local('/api/diff/fresh')).fresh) throw new Error('Files changed during checkpoint; retry');
+              if (reviewDecided || snapshotId !== currentSnapshotId()) throw new Error('Review changed during checkpoint; retry');
+              const progress = await progressSnapshot;
+              const viewedState = frozen?.viewedState ?? (progress ? loadReviewProgress(progress) : { viewedFiles: [], suppressedFiles: [] });
+              const data = { payload, files, fileIdentities: currentFileIdentities, progress, viewedState };
+              lifecycle.save(data);
+              frozen = { v: 1, id: lifecycle.id, ...data };
+              suspended = true;
+              return Response.json({ saved: true, snapshotId });
+            } catch (error) {
+              return Response.json({ error: error instanceof Error ? error.message : 'Checkpoint failed' }, { status: 409 });
+            } finally { suspending = false; }
+          }
+          if (lifecycle && url.pathname.startsWith('/api/review-lifecycle/')) {
+            if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) return Response.json({ error: 'Cross-origin lifecycle request refused' }, { status: 403 });
+            if (url.pathname.endsWith('/activity') && req.method === 'POST') {
+              lifecycle.activity(); return Response.json({ ok: true });
+            }
+            if (url.pathname.endsWith('/drafts') && req.method === 'GET') return Response.json(lifecycle.drafts());
+            if (req.method === 'PUT' || req.method === 'POST') {
+              try {
+                const raw = await req.text();
+                if (raw.length > 1024 * 1024) return Response.json({ error: 'Draft too large' }, { status: 413 });
+                const body = JSON.parse(raw);
+                if (body.serverSession !== serverSession) return Response.json(serverSessionMismatchBody(), { status: 409 });
+                if (url.pathname.endsWith('/drafts') && req.method === 'PUT' && body.drafts && typeof body.drafts === 'object' && !Array.isArray(body.drafts)) {
+                  const previous = lifecycle.drafts();
+                  if (body.revision !== previous.revision) return Response.json({ code: 'draft_conflict', ...previous }, { status: 409 });
+                  const revision = previous.revision + 1;
+                  lifecycle.saveDrafts(body.drafts, revision); lifecycle.activity(); return Response.json({ revision });
+                }
+                if (url.pathname.endsWith('/refresh') && req.method === 'POST') {
+                  refreshPending = true; lifecycle.activity(); return Response.json({ refreshed: true });
+                }
+              } catch { return Response.json({ error: 'Could not save review state' }, { status: 400 }); }
+            }
+            return Response.json({ error: 'Unknown lifecycle request' }, { status: 404 });
+          }
+          if (frozen) {
+            if (url.pathname === '/api/agents/jobs' && req.method !== 'GET') return Response.json({ error: 'Refresh the saved review before starting a new agent job' }, { status: 409 });
+            if (url.pathname === '/api/diff' && req.method === 'GET') return Response.json({ ...frozen.payload, serverSession, openStatePinned: true, reviewLifecycle: { id: lifecycle!.id, frozen: true }, imagePreviewSupported: false });
+            if (url.pathname === '/api/diff/fresh' && req.method === 'GET') return Response.json({ fresh: true });
+            if (url.pathname === '/api/file-content' && req.method === 'GET') {
+              const snapshot = url.searchParams.get('snapshot');
+              const path = url.searchParams.get('path') ?? '';
+              if (snapshot && snapshot !== currentSnapshotId()) return Response.json({ error: 'Snapshot changed' }, { status: 409 });
+              return Object.hasOwn(frozen.files, path) ? Response.json(frozen.files[path]) : Response.json({ error: 'File is not part of the saved review' }, { status: 404 });
+            }
+            if (!(refreshPending && url.pathname === '/api/diff/switch' && req.method === 'POST' && req.headers.get('x-plannotator-session') === serverSession) && /^\/api\/(?:diff\/switch|fetch-base|semantic-diff|call-flow|review-analysis|commits|pr-|review-image|review-markdown-image|code-nav|git-add|open-in|editor-annotation|ai\/|agents\/(?!jobs$))/.test(url.pathname)) return Response.json({ error: 'Refresh the saved review before using current project files' }, { status: 409 });
+          }
 
           const hostControlResponse = handleHostControl(req, url, {
             token: hostControlToken,
@@ -2367,6 +2486,7 @@ export async function startReviewServer(
               approvalNotesSupported,
 
               serverSession,
+              ...(lifecycle && { reviewLifecycle: { id: lifecycle.id, frozen: false } }),
               imagePreviewSupported,
               markdownPreviewSupported,
               ...sourceKindAdvert,
@@ -2913,6 +3033,11 @@ export async function startReviewServer(
               // over the newer one (which has its own response inbound).
               if (switchEpoch !== diffSwitchEpoch) {
                 return Response.json({ superseded: true });
+              }
+              if (frozen) {
+                if (result.error) return Response.json({ error: result.error }, { status: 409 });
+                lifecycle!.clear();
+                frozen = null;
               }
               currentHideWhitespace = effectiveHideWhitespace;
               currentPatch = result.patch;
@@ -3927,6 +4052,24 @@ export async function startReviewServer(
                 return Response.json({ error: "Invalid JSON" }, { status: 400 });
               }
             }
+            if (frozen) {
+              if (url.searchParams.get('snapshot') !== currentSnapshotId()) return Response.json({ error: 'Review snapshot changed' }, { status: 409 });
+              if (req.method !== 'GET' && req.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+              if (!frozen.progress) return Response.json({ available: false });
+              if (req.method === 'GET') return Response.json({ available: true, ...frozen.progress, ...frozen.viewedState });
+              const update = body as { key?: unknown; changes?: unknown } | null;
+              if (update?.key !== frozen.progress.key || !validReviewProgressChanges(update?.changes, frozen.progress)) return Response.json({ error: 'Invalid viewed-file update' }, { status: 400 });
+              const viewed = new Set(frozen.viewedState.viewedFiles);
+              const suppressed = new Set(frozen.viewedState.suppressedFiles);
+              for (const change of update.changes) {
+                if (change.viewed) { viewed.add(change.path); suppressed.delete(change.path); }
+                else { viewed.delete(change.path); suppressed.add(change.path); }
+              }
+              const updated = { ...frozen, viewedState: { viewedFiles: [...viewed], suppressedFiles: [...suppressed] } };
+              try { lifecycle!.save(updated); frozen = updated; }
+              catch { return Response.json({ error: 'Could not save viewed-file progress' }, { status: 500 }); }
+              return Response.json({ ok: true });
+            }
             const result = await handleReviewProgress({
               method: req.method, snapshotId: url.searchParams.get("snapshot"),
               currentSnapshotId, progress: progressSnapshot, currentProgress: () => progressSnapshot,
@@ -4268,6 +4411,10 @@ export async function startReviewServer(
 
           // Serve embedded HTML for all other routes (SPA)
           return appHtmlResponse(req, htmlContent, compressAppHtml);
+          } finally {
+            if (url.pathname === '/api/diff/switch') refreshPending = false;
+            if (trackedWrite) pendingWrites--;
+          }
         },
 
         error(err) {

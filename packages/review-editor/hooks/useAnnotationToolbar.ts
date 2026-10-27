@@ -1,3 +1,4 @@
+import { composerDraftVersion, createComposerDraftStore } from '@plannotator/ui/utils/composerDrafts';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { CodeAnnotation, SelectedLineRange, CodeAnnotationType, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
 import { useDismissOnOutsideAndEscape } from '@plannotator/ui/hooks/useDismissOnOutsideAndEscape';
@@ -39,6 +40,7 @@ interface UseAnnotationToolbarArgs {
 
 // Per-range draft storage (survives component remounts, e.g. file switches)
 interface Draft {
+  editingAnnotationId?: string;
   commentText: string;
   suggestedCode: string;
   showSuggestedCode: boolean;
@@ -49,7 +51,7 @@ interface Draft {
   tokenSelection?: TokenSelection;
 }
 
-const draftStore = new Map<string, Draft>();
+const draftStore = createComposerDraftStore<Draft>('lines');
 const restoreDraftKeyByFilePath = new Map<string, string>();
 
 export function getPendingReviewDrafts() {
@@ -97,12 +99,13 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
 
   const saveDraft = useCallback(() => {
     const range = toolbarStateRef.current?.range;
-    if (!range || editingRef.current) return;
+    if (!range || (editingRef.current && !composerDraftVersion())) return;
     const form = formRef.current;
-    const key = draftKey(filePath, range);
-    if (form.commentText.trim() || form.suggestedCode.trim() || form.conventionalLabel) {
+    const key = editingRef.current ? `edit:${editingRef.current}` : draftKey(filePath, range);
+    if (editingRef.current || form.commentText.trim() || form.suggestedCode.trim() || form.conventionalLabel) {
       draftStore.set(key, {
         ...form,
+        editingAnnotationId: editingRef.current ?? undefined,
         range,
         position: toolbarStateRef.current?.position ?? { top: 0, left: 0 },
         tokenSelection: toolbarStateRef.current?.tokenSelection,
@@ -119,7 +122,7 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
   const clearDraft = useCallback(() => {
     const range = toolbarStateRef.current?.range;
     if (!range) return;
-    const key = draftKey(filePath, range);
+    const key = editingRef.current ? `edit:${editingRef.current}` : draftKey(filePath, range);
     draftStore.delete(key);
     restoreDraftKeyByFilePath.delete(filePath);
     if (currentDraftKeyRef.current === key) {
@@ -267,16 +270,17 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
 
   // Start editing an existing annotation
   const startEdit = useCallback((annotation: CodeAnnotation) => {
+    const saved = draftStore.get(`edit:${annotation.id}`);
     setEditingAnnotationId(annotation.id);
-    setCommentText(annotation.text || '');
-    setSuggestedCode(annotation.suggestedCode || '');
+    setCommentText(saved?.commentText ?? annotation.text ?? '');
+    setSuggestedCode(saved?.suggestedCode ?? annotation.suggestedCode ?? '');
     setSelectedOriginalCode(annotation.originalCode || '');
-    setShowSuggestedCode(!!annotation.suggestedCode);
+    setShowSuggestedCode(saved?.showSuggestedCode ?? !!annotation.suggestedCode);
     setAskAIMode(false);
     setShowCodeModal(false);
     setShowCommentModal(expandedComposerRequired);
-    setConventionalLabel(annotation.conventionalLabel || null);
-    setDecorations(annotation.decorations || []);
+    setConventionalLabel(saved ? saved.conventionalLabel : annotation.conventionalLabel || null);
+    setDecorations(saved?.decorations ?? annotation.decorations ?? []);
 
     // Position toolbar near the annotation using last known mouse position
     const mousePos = lastMousePosition.current;
@@ -344,7 +348,7 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
       setShowSuggestedCode(draft.showSuggestedCode);
       setConventionalLabel(draft.conventionalLabel);
       setDecorations(draft.decorations);
-      setEditingAnnotationId(null);
+      setEditingAnnotationId(draft.editingAnnotationId ?? null);
       setAskAIMode(false);
       setShowCodeModal(false);
       setShowCommentModal(expandedComposerRequired);

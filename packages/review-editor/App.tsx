@@ -1,3 +1,4 @@
+import { useComposerDraftState } from '@plannotator/ui/hooks/useComposerDraftState';
 // Eager renderer registration (side-effect imports, evaluated before every
 // other module below). These keep Plannotator's first paint and identity
 // minting byte-identical now that @plannotator/ui loads KaTeX and the username
@@ -47,7 +48,7 @@ import type { CallFlowAdvert, CallFlowNode } from '@plannotator/shared/call-flow
 import { configStore, useConfigValue, setReviewPanelView } from '@plannotator/ui/config';
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
-import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { currentServerSession, adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
 import { ReviewEndedBanner } from './components/ReviewEndedBanner';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
@@ -144,6 +145,7 @@ import { StackedPRLabel } from './components/StackedPRLabel';
 import { PRSelector } from './components/PRSelector';
 import { PRSwitchOverlay } from './components/PRSwitchOverlay';
 import { usePRStack } from './hooks/usePRStack';
+import { useReviewLifecycle, type ReviewLifecycle } from './hooks/useReviewLifecycle';
 import { useDiffFreshness } from './hooks/useDiffFreshness';
 import { useAutoViewed } from './hooks/useAutoViewed';
 import { useReviewProgress } from './hooks/useReviewProgress';
@@ -569,7 +571,8 @@ const ReviewApp: React.FC = () => {
   //                   produced "trailing context mismatch" warnings).
   const [selectedBase, setSelectedBase] = useState<string | null>(null);
   const [committedBase, setCommittedBase] = useState<string | null>(null);
-  const discussions = useReviewDiscussionState(snapshotId);
+  const lifecycle = useReviewLifecycle();
+  const discussions = useReviewDiscussionState(snapshotId, lifecycle.ready ? lifecycle.review?.id : undefined);
   const semanticDiffUsable = semanticDiffEnabled && semanticDiffAvailable;
   const callFlowAvailable = callFlowEnabled && callFlowAdvert.available;
   const { state: callFlowAnalysis, retry: retryCallFlowAnalysis } = useCallFlowAnalysis(snapshotId, callFlowAvailable);
@@ -725,7 +728,7 @@ const ReviewApp: React.FC = () => {
   const [platformUser, setPlatformUser] = useState<string | null>(null);
   // `chooseEvent` (#1611): the dialog offers Comment / Request changes.
   const [platformCommentDialog, setPlatformCommentDialog] = useState<{ action: PRReviewAction; plan: ReviewSubmission; chooseEvent: boolean } | null>(null);
-  const [platformGeneralComment, setPlatformGeneralComment] = useState('');
+  const [platformGeneralComment, setPlatformGeneralComment] = useComposerDraftState('platform-general', '');
   // PR/MR pages a completed platform submission posted to; the completion
   // screen links them so the reviewer can always get there with a real click.
   const [platformPostedUrls, setPlatformPostedUrls] = useState<string[]>([]);
@@ -994,7 +997,7 @@ const ReviewApp: React.FC = () => {
     commentAnnotations,
     viewedFiles,
     autoViewSuppressed,
-    isApiMode: !!origin,
+    isApiMode: !!origin && (!lifecycle.review || lifecycle.ready),
     submitted: !!submitted,
     onDraftTargetMerge: (items) => draftTargetMergeRef.current(items),
     // Only once the diff snapshot is known and progress support is settled:
@@ -2051,6 +2054,7 @@ const ReviewApp: React.FC = () => {
       confirmedAnalysisSettings.current = { semanticDiff: semanticDiffEnabled, callFlow: callFlowEnabled };
       return;
     }
+    if (lifecycle.review?.frozen) return;
     const previous = confirmedAnalysisSettings.current;
     const requested = { semanticDiff: semanticDiffEnabled, callFlow: callFlowEnabled };
     const controller = new AbortController();
@@ -2086,7 +2090,7 @@ const ReviewApp: React.FC = () => {
         toast.error(error instanceof Error ? error.message : 'Analysis settings could not be applied.');
       });
     return () => controller.abort();
-  }, [applyCallFlowAdvert, applySemanticDiffAdvert, callFlowEnabled, isLoading, semanticDiffEnabled]);
+  }, [applyCallFlowAdvert, applySemanticDiffAdvert, callFlowEnabled, isLoading, lifecycle.review?.frozen, semanticDiffEnabled]);
 
   // Open the All files overview on first load. Semantic diff stays available via
   // the file-tree nav entry, but it's no longer the default landing view.
@@ -2190,7 +2194,7 @@ const ReviewApp: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: ReviewSnapshotResponse & {
+      .then(async (data: ReviewSnapshotResponse & {
         aiEnabled?: boolean;
         origin?: Origin;
         mode?: string;
@@ -2202,6 +2206,7 @@ const ReviewApp: React.FC = () => {
         markdownExtensions?: string[];
         sharingEnabled?: boolean;
         serverSession?: string;
+        reviewLifecycle?: ReviewLifecycle;
         sourceKind?: ReviewSourceKind;
         repoInfo?: { display: string; branch?: string };
         prMetadata?: PRMetadata;
@@ -2222,6 +2227,8 @@ const ReviewApp: React.FC = () => {
         autoUpdateSupported?: boolean;
         autoUpdateActive?: boolean;
       }) => {
+        adoptServerSession(data.serverSession);
+        await lifecycle.load(data.reviewLifecycle);
         apiModeRef.current = true;
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
@@ -2281,7 +2288,7 @@ const ReviewApp: React.FC = () => {
         if (data.isWSL) setIsWSL(true);
         setSemanticDiffAvailable(data.semanticDiff?.available === true);
         if (data.callFlow) setCallFlowAdvert(data.callFlow);
-        setOpenStatePinned(data.openStatePinned === true);
+        setOpenStatePinned(data.openStatePinned === true || data.reviewLifecycle?.frozen === true);
       })
       .catch(() => {
         // Not in API mode - use demo content
@@ -2993,7 +3000,7 @@ const ReviewApp: React.FC = () => {
       await flushReviewProgress();
       const res = await fetch('/api/diff/switch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(currentServerSession() && { 'X-Plannotator-Session': currentServerSession()! }) },
         body: JSON.stringify({
           diffType: fullDiffType,
           // Server ignores base for modes that don't use it (uncommitted/staged/etc),
@@ -3401,7 +3408,7 @@ const ReviewApp: React.FC = () => {
   const diffFreshness = useDiffFreshness({
     // Static patch: the bytes are the session. Nothing can go stale, so the
     // probe would only poll an endpoint with no fingerprint to compare.
-    enabled: !!origin && !isStaticPatch,
+    enabled: !!origin && !isStaticPatch && !lifecycle.review?.frozen,
     resetKey: diffData?.rawPatch ?? '',
     snapshotId,
     onAgentCwd: setAgentCwd,
@@ -4761,11 +4768,11 @@ const ReviewApp: React.FC = () => {
             })),
           ];
 
-  if (isLoading) {
+  if (isLoading || (lifecycle.review && (!lifecycle.ready || !initialDraftChecked) && !lifecycle.recovery)) {
     return (
       <ThemeProvider defaultTheme="dark" manageFavicon>
         <div className="pn-app-viewport flex items-center justify-center bg-background">
-          <div className="text-muted-foreground text-sm">Loading diff...</div>
+          <div className="text-muted-foreground text-sm">{lifecycle.error ?? 'Loading diff...'}{lifecycle.error && <button type="button" className="ml-3 underline" onClick={() => location.reload()}>Reload</button>}</div>
         </div>
       </ThemeProvider>
     );
@@ -4790,6 +4797,23 @@ const ReviewApp: React.FC = () => {
         data-pn-compact-review-shell={isCompactTouchLayout || undefined}
         data-pn-browser-canvas="background"
       >
+        {lifecycle.review?.frozen && <div role="status" className="flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-2 text-sm">
+          <span>Resumed saved snapshot. Your comments and discussions are preserved.</span>
+          <button type="button" className="underline whitespace-nowrap" disabled={lifecycle.refreshing || isStaticPatch} onClick={() => void lifecycle.refresh(() => fetchDiffSwitch(diffType, selectedBase ?? undefined, { preserveFile: true, contentRefresh: true }))}>
+            {lifecycle.refreshing ? 'Refreshing…' : 'Refresh snapshot'}
+          </button>
+        </div>}
+        {lifecycle.error && <div role="alert" className="border-b border-border px-4 py-2 text-sm text-destructive">{lifecycle.error}</div>}
+        <ConfirmDialog
+          isOpen={!!lifecycle.recovery}
+          onClose={() => lifecycle.recover(false)}
+          onConfirm={() => lifecycle.recover(true)}
+          title="Unfinished drafts differ"
+          message="This browser has unsaved edits to drafts changed in another tab or device. Restore this browser's edits, or use the server drafts. Other saved drafts are preserved."
+          showCancel
+          confirmText="Restore browser edits"
+          cancelText="Use server drafts"
+        />
         {/* Header */}
         <header className={isCompactTouchLayout
           ? 'min-h-[52px] grid grid-cols-[44px_minmax(0,1fr)_44px] items-center border-b border-border/50 bg-card/50 backdrop-blur-xl z-50'
@@ -5849,6 +5873,7 @@ const ReviewApp: React.FC = () => {
             isOpen
             onClose={() => setCompactDecisionComposer(null)}
             composer={compactComposerItem.composer}
+            draftKey={`decision-dialog:${compactComposerItem.id}`}
             subtitle={compactComposerItem.subtitle}
             disabled={busyWithDecision || !!submitted}
             onSubmit={(note) => {

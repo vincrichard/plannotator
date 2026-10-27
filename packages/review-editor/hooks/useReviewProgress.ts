@@ -1,3 +1,4 @@
+import { currentServerSession, noteServerSessionMismatch } from '@plannotator/ui/utils/serverSession';
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { toast } from 'sonner';
 
@@ -63,6 +64,7 @@ export function useReviewProgress({
     for (let start = 0; start < changes.length; start += MAX_CHANGES_PER_REQUEST) {
       const chunk = changes.slice(start, start + MAX_CHANGES_PER_REQUEST);
       const body = JSON.stringify({ key: data.key, changes: chunk });
+      const nonce = currentServerSession();
       const settle = () => {
         for (const { path } of chunk) {
           if (target.pending.get(path) === edits.get(path)) target.pending.delete(path);
@@ -70,9 +72,10 @@ export function useReviewProgress({
       };
       writes.current = writes.current.then(async () => {
         const response = await fetch(url, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true,
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...(nonce && { 'X-Plannotator-Session': nonce }) }, body, keepalive: true,
           signal: AbortSignal.timeout(PROGRESS_TIMEOUT_MS),
         });
+        if (await noteServerSessionMismatch(response)) throw new Error('Review session changed');
         if (response.status === 400) {
           // The server rejected the update itself (not a transient failure):
           // retrying the same edits could never succeed, so drop them.

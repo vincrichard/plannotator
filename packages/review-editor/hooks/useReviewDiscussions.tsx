@@ -1,3 +1,4 @@
+import { createComposerDraftStore } from '@plannotator/ui/utils/composerDrafts';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { ReviewDiscussion, ReviewDiscussionAnchor, ReviewDiscussionsSnapshot } from '../../core/review-discussions';
 import { withServerSession, noteServerSessionMismatch, currentServerSession } from '@plannotator/ui/utils/serverSession';
@@ -15,10 +16,26 @@ const endedMessage = 'This review has ended. Your question was not sent. Keep th
 const markerPrefix = 'discussion-marker-';
 export function discussionIdFromMarker(id: string) { return id.startsWith(markerPrefix) ? id.slice(markerPrefix.length) : null; }
 
-export function useReviewDiscussionState(snapshotId?: string) {
+const durableDiscussionDrafts = createComposerDraftStore<string>('discussions');
+export function useReviewDiscussionState(snapshotId?: string, logicalReviewId?: string) {
   const [state, setState] = useState<ReviewDiscussionsSnapshot>({ supported: false, available: false, snapshotId: snapshotId ?? '', version: 0, threads: [] });
   const [error, setError] = useState<string>();
-  const storageKey = `review-discussion-drafts:${location.pathname}:${currentServerSession() ?? 'loading'}`;
+  const storageKey = `review-discussion-drafts:${logicalReviewId ?? `${location.pathname}:${currentServerSession() ?? 'loading'}`}`;
+  const readDraft = (suffix = '') => {
+    if (!logicalReviewId) return sessionStorage.getItem(storageKey + suffix);
+    const entries = [...durableDiscussionDrafts].filter(([key]) => key.startsWith(suffix + '/')).map(([key, value]) => [key.slice(suffix.length + 1), JSON.parse(value)]);
+    return JSON.stringify(suffix === ':messages' ? entries : Object.fromEntries(entries));
+  };
+  const writeDraft = (suffix: string, value: string) => {
+    if (logicalReviewId) {
+      const parsed = JSON.parse(value);
+      const entries: [string, unknown][] = suffix === ':messages' ? parsed : Object.entries(parsed);
+      const keys = new Set(entries.map(([key]) => suffix + '/' + key));
+      for (const key of durableDiscussionDrafts.keys()) if (key.startsWith(suffix + '/') && !keys.has(key)) durableDiscussionDrafts.delete(key);
+      for (const [key, item] of entries) durableDiscussionDrafts.set(suffix + '/' + key, JSON.stringify(item));
+    }
+    try { sessionStorage.setItem(storageKey + suffix, value); } catch { /* Keep in-memory drafts. */ }
+  };
   const [disconnected, setDisconnected] = useState(false);
   const [ended, setEnded] = useState(false);
   const endedRef = useRef(false);
@@ -28,21 +45,21 @@ export function useReviewDiscussionState(snapshotId?: string) {
     setError(endedMessage);
   }, []);
   const [failedQuestions, setFailedQuestions] = useState<Record<string, CreateQuestion>>(() => {
-    try { return JSON.parse(sessionStorage.getItem(storageKey + ':pending') ?? '{}'); } catch { return {}; }
+    try { return JSON.parse(readDraft(':pending') ?? '{}'); } catch { return {}; }
   });
   const saveFailedQuestions = useCallback((update: (previous: Record<string, CreateQuestion>) => Record<string, CreateQuestion>) => {
     setFailedQuestions(previous => {
       const next = update(previous);
-      try { sessionStorage.setItem(storageKey + ':pending', JSON.stringify(next)); } catch { /* Keep the in-memory copy. */ }
+      try { writeDraft(':pending', JSON.stringify(next)); } catch { /* Keep the in-memory copy. */ }
       return next;
     });
   }, [storageKey]);
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(sessionStorage.getItem(storageKey) ?? '{}'); } catch { return {}; }
+    try { return JSON.parse(readDraft() ?? '{}'); } catch { return {}; }
   });
   useEffect(() => {
-    try { setDrafts(JSON.parse(sessionStorage.getItem(storageKey) ?? '{}')); } catch { setDrafts({}); }
-    try { setFailedQuestions(JSON.parse(sessionStorage.getItem(storageKey + ':pending') ?? '{}')); } catch { setFailedQuestions({}); }
+    try { setDrafts(JSON.parse(readDraft() ?? '{}')); } catch { setDrafts({}); }
+    try { setFailedQuestions(JSON.parse(readDraft(':pending') ?? '{}')); } catch { setFailedQuestions({}); }
   }, [storageKey]);
   const [expandedThreads, setExpandedThreads] = useState<Record<string, boolean>>({});
   const setThreadExpanded = useCallback((id: string, expanded: boolean) => {
@@ -108,12 +125,12 @@ export function useReviewDiscussionState(snapshotId?: string) {
     }
   }, [snapshotId, request, setThreadExpanded, failedQuestions, saveFailedQuestions]);
   const pendingMessages = useMemo(() => {
-    try { return new Map<string, { id: string; text: string }>(JSON.parse(sessionStorage.getItem(storageKey + ':messages') ?? '[]')); }
+    try { return new Map<string, { id: string; text: string }>(JSON.parse(readDraft(':messages') ?? '[]')); }
     catch { return new Map<string, { id: string; text: string }>(); }
   }, [storageKey]);
   const send = useCallback(async (id: string, text: string) => {
     const persist = () => {
-      try { sessionStorage.setItem(storageKey + ':messages', JSON.stringify([...pendingMessages])); } catch { /* Keep the in-memory retry identity. */ }
+      try { writeDraft(':messages', JSON.stringify([...pendingMessages])); } catch { /* Keep the in-memory retry identity. */ }
     };
     let message = pendingMessages.get(id);
     if (!message || typeof message.id !== 'string' || message.text !== text) {
@@ -133,7 +150,7 @@ export function useReviewDiscussionState(snapshotId?: string) {
   }, [request, state.threads]);
   const setDraft = useCallback((id: string, text: string) => setDrafts(previous => {
     const next = { ...previous, [id]: text };
-    try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Keep the in-memory draft when storage is unavailable. */ }
+    try { writeDraft('', JSON.stringify(next)); } catch { /* Keep the in-memory draft when storage is unavailable. */ }
     return next;
   }), [storageKey]);
   const markRead = useCallback((thread: ReviewDiscussion) => setSeen(previous => previous[thread.id] === thread.updatedAt ? previous : { ...previous, [thread.id]: thread.updatedAt }), []);

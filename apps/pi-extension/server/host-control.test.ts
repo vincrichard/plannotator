@@ -46,6 +46,22 @@ const saveDraft = (url: string, draft: Record<string, unknown>) =>
 	fetch(`${url}/api/draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) });
 
 describe("Pi host control", () => {
+	test("durable lifecycle requests explicitly refuse without saving or deciding", () =>
+		sandboxed(async () => {
+			const server = await startReviewServer({ rawPatch: "", gitRef: "HEAD", htmlContent: MINIMAL_HTML, hostControlToken: TOKEN });
+			try {
+				for (const [path, method] of [["/api/host/suspend", "POST"], ["/api/review-lifecycle/drafts", "GET"], ["/api/review-lifecycle/activity", "POST"], ["/api/review-lifecycle/refresh", "POST"]]) {
+					const response = await fetch(`${server.url}${path}`, { method, headers: auth });
+					expect(response.status).toBe(404);
+					const body = await response.json();
+					expect(body.code).toBe("review_lifecycle_unsupported");
+					expect(body.saved).toBeUndefined();
+				}
+				expect((await (await fetch(`${server.url}/api/diff`)).json()).reviewLifecycle).toBeUndefined();
+				expect(server.hostControl.status().decided).toBe(false);
+			} finally { server.stop(); }
+		}));
+
 	test("annotate: guarded endpoints; close keeps the draft and settles as an agent dismissal", () =>
 		sandboxed(async () => {
 			const server = await startAnnotateServer({

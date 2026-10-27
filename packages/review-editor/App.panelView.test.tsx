@@ -20,6 +20,8 @@ import {
   setStorageBackend,
   type StorageBackend,
 } from "@plannotator/ui/utils/storage";
+import { setDraftRequestHeaders } from "@plannotator/ui/hooks/useAnnotationDraft";
+import { __resetServerSessionForTests } from "@plannotator/ui/utils/serverSession";
 import { configStore } from "@plannotator/ui/config";
 
 // Vite-only virtual module (`?worker&inline`) — bun cannot resolve it, so the
@@ -150,14 +152,14 @@ function seedUnrelatedAnnouncementsSeen(): void {
   memory.set("plannotator-review-dest-spotlight-seen", "1");
 }
 
-async function mount(seed: () => void = () => {}): Promise<void> {
+async function mount(seed: () => void = () => {}, fetchImpl = makeFetch()): Promise<void> {
   setStorageBackend(memoryBackend);
   seedUnrelatedAnnouncementsSeen();
   seed();
   // configStore is a module singleton that resolves cookies once per process,
   // so a per-test seed only reaches it through this host re-hydration hook.
   configStore.loadFromBackend();
-  globalThis.fetch = makeFetch();
+  globalThis.fetch = fetchImpl;
   // SAFETY: the App only uses EventSource's constructor, handlers, and close.
   globalThis.EventSource = StubEventSource as unknown as typeof EventSource;
   host = document.createElement("div");
@@ -180,6 +182,12 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   globalThis.EventSource = originalEventSource;
   memory.clear();
+  if (hasDom) {
+    setDraftRequestHeaders();
+    __resetServerSessionForTests();
+    localStorage.clear();
+    sessionStorage.clear();
+  }
   resetStorageBackend();
   if (hasDom) document.body.replaceChildren();
 });
@@ -223,4 +231,33 @@ describe.if(hasDom)("opening panel view", () => {
 
     expect(pressedPanelSegment()).toBe("Git status");
   });
+  test("a frozen resumed snapshot defers live analysis settings until explicit refresh", async () => {
+    let analysisWrites = 0;
+    const fallback = makeFetch();
+    const fetchImpl = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+      if (url.pathname === "/api/diff") return Response.json({ ...DIFF_PAYLOAD, serverSession: "resumed-test", reviewLifecycle: { id: "logical-review", frozen: true } });
+      if (url.pathname === "/api/review-lifecycle/drafts") return Response.json({ drafts: {}, revision: 0 });
+      if (url.pathname === "/api/review-lifecycle/refresh") return Response.json({ refreshed: true });
+      if (url.pathname === "/api/diff/switch") return Response.json({ ...DIFF_PAYLOAD, snapshotId: "refreshed-snapshot" });
+      if (url.pathname === "/api/review-analysis" && init?.method === "POST") {
+        analysisWrites++;
+        return Response.json({});
+      }
+      return fallback(input, init);
+    }, { preconnect: originalFetch.preconnect });
+    await mount(() => {}, fetchImpl);
+    await settle();
+    expect(analysisWrites).toBe(0);
+    await act(async () => configStore.set("semanticDiffEnabled", !configStore.get("semanticDiffEnabled")));
+    await settle();
+    expect(analysisWrites).toBe(0);
+    const refresh = Array.from(host!.querySelectorAll<HTMLButtonElement>("button"))
+      .find(button => button.textContent?.trim() === "Refresh snapshot")!;
+    expect(refresh).toBeDefined();
+    await act(async () => refresh.click());
+    for (let attempt = 0; attempt < 20 && !analysisWrites; attempt++) await settle();
+    expect(analysisWrites).toBeGreaterThan(0);
+  });
+
 });

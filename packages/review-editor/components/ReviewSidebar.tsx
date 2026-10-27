@@ -1,3 +1,4 @@
+import { useComposerDraftState } from '@plannotator/ui/hooks/useComposerDraftState';
 import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import { ReviewDiscussionsTab } from './ReviewDiscussionThread';
 import React, { useRef, useState } from 'react';
@@ -307,8 +308,8 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
   // component and discards the draft (accepted).
   const [generalComposerOpen, setGeneralComposerOpen] = useState(false);
   // Inline editor for an outdated comment's text (the only cards editable here).
-  const [editingOutdated, setEditingOutdated] = useState<{ id: string; draft: string } | null>(null);
-  const [generalDraft, setGeneralDraft] = useState('');
+  const [editingOutdated, setEditingOutdated] = useComposerDraftState<{ id: string; draft: string } | null>('outdated-edit', null);
+  const [generalDraft, setGeneralDraft] = useComposerDraftState('sidebar-general', '');
   // Available panel width for the popover clamp; the overlay presentation is
   // full-screen, where the 100vw class guard applies instead.
   const generalComposerPanelWidth = presentation === 'overlay' ? undefined : (width ?? 288);

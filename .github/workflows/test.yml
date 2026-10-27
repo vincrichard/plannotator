@@ -219,6 +219,7 @@ jobs:
           packages/review-editor/hooks/useCodeNavPreview.test.tsx
           packages/review-editor/hooks/useCodeNav.test.tsx
           packages/review-editor/hooks/useReviewDiscussions.test.tsx
+          packages/review-editor/hooks/useReviewLifecycle.test.tsx
           packages/review-editor/components/ReviewDiscussionThread.test.tsx
           packages/review-editor/hooks/useReviewSnapshot.test.tsx
           packages/review-editor/hooks/useReviewProgress.test.tsx

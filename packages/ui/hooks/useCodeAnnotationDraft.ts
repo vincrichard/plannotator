@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { CodeAnnotation, Annotation, CommentAnnotation } from '../types';
-import { getDraftTransport } from './useAnnotationDraft';
+import { getDraftTransport, stageCodeDraftRecovery } from './useAnnotationDraft';
 
 const DEBOUNCE_MS = 500;
 /** Bound on one read of a switched-onto target's draft (#1590). */
@@ -252,6 +252,20 @@ export function useCodeAnnotationDraft({
 
     if (timerRef.current) clearTimeout(timerRef.current);
 
+    const payload: DraftData = {
+      codeAnnotations: annotations,
+      descriptionAnnotations,
+      commentAnnotations,
+      ...(persistViewedFiles ? { viewedFiles: [...viewedFiles] } : {}),
+      ...(persistViewedFiles && autoViewSuppressed && autoViewSuppressed.size > 0
+        ? { autoViewSuppressed: [...autoViewSuppressed] }
+        : {}),
+      draftGeneration: draftGenerationRef.current + 1,
+      ts: Date.now(),
+    };
+
+    if (!awaitingTargetLoadRef.current && !targetUnreadableRef.current) stageCodeDraftRecovery(payload);
+
     timerRef.current = setTimeout(() => {
       // The switched-onto target's draft is still loading: writing now would
       // overwrite it unread. Settling the load re-runs this effect.
@@ -266,6 +280,7 @@ export function useCodeAnnotationDraft({
       }
       const draftGeneration = draftGenerationRef.current + 1;
       draftGenerationRef.current = draftGeneration;
+      payload.draftGeneration = draftGeneration;
 
       if (isEmpty) {
         // The user cleared everything (#948). Delete the draft with a generation
@@ -275,18 +290,6 @@ export function useCodeAnnotationDraft({
         getDraftTransport().remove(draftGeneration, { keepalive: false }).catch(() => {});
         return;
       }
-
-      const payload: DraftData = {
-        codeAnnotations: annotations,
-        descriptionAnnotations,
-        commentAnnotations,
-        ...(persistViewedFiles ? { viewedFiles: [...viewedFiles] } : {}),
-        ...(persistViewedFiles && autoViewSuppressed && autoViewSuppressed.size > 0
-          ? { autoViewSuppressed: [...autoViewSuppressed] }
-          : {}),
-        draftGeneration,
-        ts: Date.now(),
-      };
 
       getDraftTransport().save(payload, { keepalive: false }).catch(() => {});
     }, DEBOUNCE_MS);

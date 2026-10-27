@@ -1,3 +1,4 @@
+import { createComposerDraftStore } from '../utils/composerDrafts';
 import React, { useState, useEffect, useMemo, useRef, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 import type { ImageAttachment } from '../types';
@@ -129,7 +130,7 @@ const MAX_POPOVER_WIDTH = 384;
 const GAP = 8;
 
 // Module-level draft store: survives popover unmount so reopening the same key restores in-progress text.
-const draftStore = new Map<string, { text: string; images: ImageAttachment[] }>();
+const draftStore = createComposerDraftStore<{ text: string; images: ImageAttachment[] }>('popovers');
 
 /** Mirrors the latest text + images into `draftStore[draftKey]` so they outlive popover unmount. No-op without a key. */
 function useCommentDraftSync(draftKey: string | undefined, text: string, images: ImageAttachment[]) {

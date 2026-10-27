@@ -1,3 +1,5 @@
+import { createComposerDraftStore } from '../utils/composerDrafts';
+import { noteServerSessionMismatch } from '../utils/serverSession';
 /**
  * Auto-save annotation drafts to the server.
  *
@@ -70,23 +72,63 @@ export interface DraftSaveRefused {
  * `save` rejects on failure (the keepalive retry stays in the hook so its
  * generation-match gate is preserved); `remove` always resolves.
  */
+const pendingCodeDraft = createComposerDraftStore<{ base: Record<string, unknown>; body: Record<string, unknown> }>('annotations');
+let codeDraftBaseline: Record<string, unknown> = {};
+/** Stage before debounce: suspension may reject the eventual old-session request. */
+export function stageCodeDraftRecovery(body: object): void {
+  if (draftRequestHeaders) pendingCodeDraft.set('pending', { base: codeDraftBaseline, body: body as Record<string, unknown> });
+}
+function recoveredCodeDraft(remote: unknown) {
+  codeDraftBaseline = remote && typeof remote === 'object' ? remote as Record<string, unknown> : {};
+  const pending = draftRequestHeaders && pendingCodeDraft.get('pending');
+  if (!pending) return remote;
+  const result = { ...codeDraftBaseline, ...pending.body };
+  for (const field of ['codeAnnotations', 'descriptionAnnotations', 'commentAnnotations']) {
+    const byId = (value: unknown) => new Map<string, unknown>(Array.isArray(value) ? value.filter(item => item && typeof item.id === 'string').map(item => [item.id, item]) : []);
+    const before = byId(pending.base[field]);
+    const local = byId(pending.body[field]);
+    const latest = byId(codeDraftBaseline[field]);
+    for (const id of new Set([...before.keys(), ...local.keys()])) {
+      if (JSON.stringify(before.get(id)) === JSON.stringify(local.get(id))) continue;
+      if (local.has(id)) latest.set(id, local.get(id)); else latest.delete(id);
+    }
+    result[field] = [...latest.values()];
+  }
+  result.draftGeneration = Math.max(Number(codeDraftBaseline.draftGeneration) || 0, Number(pending.body.draftGeneration) || 0);
+  return result;
+}
+
+let draftRequestHeaders: (() => Record<string, string>) | undefined;
+/** Optional session guard for a host resuming the same logical review on a new transport. */
+export function setDraftRequestHeaders(headers?: () => Record<string, string>): void { draftRequestHeaders = headers; }
+
 const defaultDraftTransport: DraftTransport = {
   async load() {
-    const res = await fetch('/api/draft');
+    const res = await fetch('/api/draft', draftRequestHeaders ? { signal: AbortSignal.timeout(10_000) } : undefined);
+    if (draftRequestHeaders && !res.ok && res.status !== 404) throw new Error('Saved comments could not be loaded');
     const data = (await res.json().catch(() => null)) as unknown;
     if (!res.ok) {
       const generation = readDraftGeneration(
         (data as MissingDraftData | null)?.draftGeneration,
       );
-      return { data: null, generation };
+      return { data: recoveredCodeDraft(null), generation };
     }
-    return { data, generation: null };
+    return { data: recoveredCodeDraft(data), generation: null };
   },
   save(body, { keepalive }) {
+    if (draftRequestHeaders && !pendingCodeDraft.has('pending')) stageCodeDraftRecovery(body);
+    const pending = pendingCodeDraft.get('pending');
     const payload = JSON.stringify(body);
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': 'application/json', ...draftRequestHeaders?.() };
     return fetch('/api/draft', { method: 'POST', headers, body: payload, keepalive }).then(
       async (res): Promise<void | DraftSaveRefused> => {
+        if (draftRequestHeaders) {
+          if (await noteServerSessionMismatch(res)) throw new Error('Review session changed; unsaved comments are kept for recovery');
+          if (!res.ok) throw new Error('Could not save comments; unsaved comments are kept for recovery');
+          codeDraftBaseline = body as Record<string, unknown>;
+          if (pendingCodeDraft.get('pending') === pending) pendingCodeDraft.delete('pending');
+          return;
+        }
         if (res.status !== 409) return;
         const data = (await res.json().catch(() => null)) as (MissingDraftData & { decided?: boolean }) | null;
         // The review was decided: saving again would put back comments that
@@ -98,9 +140,15 @@ const defaultDraftTransport: DraftTransport = {
     );
   },
   remove(generation, { keepalive }) {
-    return fetch(`/api/draft?generation=${generation}`, { method: 'DELETE', keepalive }).then(
-      () => {},
-      () => {},
+    const pending = pendingCodeDraft.get('pending');
+    return fetch(`/api/draft?generation=${generation}`, { method: 'DELETE', keepalive, ...(draftRequestHeaders && { headers: draftRequestHeaders() }) }).then(
+      async res => {
+        if (!draftRequestHeaders) return;
+        if (await noteServerSessionMismatch(res) || !res.ok) throw new Error('Could not clear saved comments; reload to recover changes');
+        codeDraftBaseline = {};
+        if (pendingCodeDraft.get('pending') === pending) pendingCodeDraft.delete('pending');
+      },
+      error => { if (draftRequestHeaders) throw error; },
     );
   },
 };

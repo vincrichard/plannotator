@@ -254,6 +254,8 @@ Use these inside `instructions` strings. They render once, when the phase is ent
 
 ### Code review
 
+Durable suspension and resume currently support detached local Git text reviews in the Bun CLI only. Pi-hosted reviews do not advertise this lifecycle, and their lifecycle endpoints explicitly return an unsupported response without saving or closing the review.
+
 Run `/plannotator-review` to open your current VCS changes in the code review UI. Annotate specific lines, switch between the modes supported by the detected Git, GitButler, or JJ provider, and submit feedback that gets sent to the agent. Pass `--git` or `--gitbutler` to force that provider; GitButler requires `but` 0.21.0 or newer on `PATH`. Pass `--patch-file <path>` to review a static caller-supplied unified diff without a repository.
 ### Ask this session
 

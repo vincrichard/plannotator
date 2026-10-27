@@ -1,3 +1,4 @@
+import { useComposerDraftState } from '../hooks/useComposerDraftState';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, Loader2, Send } from 'lucide-react';
 import { Button } from './ui/button';
@@ -175,9 +176,10 @@ export const DecisionNoteDialog: React.FC<{
   disabled?: boolean;
   /** Free prose under the title, e.g. what the note rides along with. */
   subtitle?: string;
-}> = ({ isOpen, onClose, composer, onSubmit, disabled = false, subtitle }) => {
+  draftKey?: string;
+}> = ({ isOpen, onClose, composer, onSubmit, disabled = false, subtitle, draftKey }) => {
   const isCompactTouchLayout = useCompactTouchLayout();
-  const [text, setText] = useState('');
+  const [text, setText] = useComposerDraftState(draftKey, '');
   const contentRef = useRef<HTMLDivElement>(null);
 
   // If the surface goes busy while the dialog is open, close it rather than
@@ -263,7 +265,7 @@ export const DecisionControl: React.FC<DecisionControlProps> = ({
   const [activeItemId, setActiveItemId] = useState<DecisionMenuItem['id'] | null>(null);
   // Drafts are keyed per item so stepping back from a composer (Esc, back
   // button, even closing the popover) keeps the half-typed note.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useComposerDraftState<Record<string, string>>('decision-menu', {});
   // L2: only the ID is state — the confirm's title/message/handler resolve
   // from the LIVE spec at render, so a spec update while the dialog is up
   // can never confirm stale copy (e.g. an outdated count).

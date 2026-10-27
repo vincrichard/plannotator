@@ -2027,6 +2027,12 @@ export async function startReviewServer(options: {
 		if (requestHostGuard.refuse(req, res)) return;
 		const url = requestUrl(req);
 
+		// Durable checkpoints belong to detached Bun reviews; never imply Pi saved one.
+		if (url.pathname === "/api/host/suspend" || url.pathname.startsWith("/api/review-lifecycle/")) {
+			json(res, { error: "Durable review suspension is unavailable in Pi", code: "review_lifecycle_unsupported" }, 404);
+			return;
+		}
+
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
 
 		// API: Get tour result

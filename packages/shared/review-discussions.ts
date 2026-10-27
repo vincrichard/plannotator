@@ -9,9 +9,12 @@ interface StoredThread extends ReviewDiscussion { forkId?: string; context: stri
 interface Options {
   file: string;
   serverSession: string;
+  /** Stable owner identity across restarts; transport requests still require serverSession. */
+  storageIdentity?: string;
   provider?: 'codex' | 'claude' | 'opencode';
   supported?: boolean;
   unavailableReason?: string;
+  getUnavailableReason?(): string | undefined;
   getSnapshotId(): string;
   getContext(): { snapshotId: string; patch: string; description: string; cwd: string };
   isDecided(): boolean;
@@ -47,7 +50,7 @@ export function createReviewDiscussions(options: Options) {
   const running = new Map<string, { controller: AbortController; agent: ReadOnlyFork }>();
   try {
     const saved = JSON.parse(readFileSync(options.file, 'utf8'));
-    if (!object(saved) || saved.serverSession !== options.serverSession || !Array.isArray(saved.threads)) throw new Error('Invalid discussion store');
+    if (!object(saved) || saved.serverSession !== (options.storageIdentity ?? options.serverSession) || !Array.isArray(saved.threads)) throw new Error('Invalid discussion store');
     threads = saved.threads;
     version = Number(saved.version) || 0;
     for (const thread of threads) if (thread.status === 'answering') {
@@ -60,17 +63,20 @@ export function createReviewDiscussions(options: Options) {
   const save = () => {
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     const temporary = `${options.file}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ serverSession: options.serverSession, version: version + 1, threads }), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify({ serverSession: options.storageIdentity ?? options.serverSession, version: version + 1, threads }), { mode: 0o600 });
     renameSync(temporary, options.file);
     version++;
   };
-  const snapshot = (): ReviewDiscussionsSnapshot => ({
-    supported: options.supported !== false, available: options.supported !== false && !stopped && !options.unavailableReason && !!options.provider,
+  const snapshot = (): ReviewDiscussionsSnapshot => {
+    const unavailableReason = options.getUnavailableReason?.() ?? options.unavailableReason;
+    return ({
+    supported: options.supported !== false, available: options.supported !== false && !stopped && !unavailableReason && !!options.provider,
     ...(options.provider ? { provider: options.provider } : {}),
-    ...(options.unavailableReason ? { reason: options.unavailableReason } : {}),
+    ...(unavailableReason ? { reason: unavailableReason } : {}),
     snapshotId: options.getSnapshotId(), version,
     threads: threads.map(({ forkId, context, cwd, ...thread }) => thread),
   });
+  };
   const cancel = (id: string) => {
     const job = running.get(id);
     running.delete(id);
@@ -148,7 +154,7 @@ export function createReviewDiscussions(options: Options) {
       if (req.method !== 'POST' && req.method !== 'PATCH') return fail('Method not allowed', 405);
       if (!callFlowInstallOriginAllowed(req.headers.get('origin'), url.host, req.headers.get('sec-fetch-site'))) return fail('Cross-origin discussion requests are not allowed', 403);
       if (stopped || options.isDecided()) return fail('This review has ended.', 409);
-      if (!snapshot().available) return fail(options.unavailableReason ?? 'No supported parent agent session is available.', 503);
+      if (!snapshot().available) return fail(snapshot().reason ?? 'No supported parent agent session is available.', 503);
       let body: Record<string, unknown>;
       try {
         const raw = await req.text();
