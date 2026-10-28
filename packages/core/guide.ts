@@ -17,13 +17,24 @@ export const GUIDE_ENGINE_LABEL = {
   copilot: 'Copilot',
 } as const;
 
+export interface GuideLineRange {
+  /** Inclusive, one-based source coordinates. */
+  start: number;
+  end: number;
+}
+
 export interface GuideDiffRef {
-  /** Repo-relative path; must match a DiffFile.path in the current review patch. */
+  /** Stable within a guide; incremental repairs replace this block without changing other blocks. */
+  id?: string;
+  /** Context quotes repository code without counting it toward changed-line coverage. */
+  kind?: 'diff' | 'context';
+  oldRange?: GuideLineRange;
+  newRange?: GuideLineRange;
+  /** Exact context excerpt captured by the server, never accepted from generator output. */
+  source?: string;
+  /** Repo-relative path; diff blocks match the review patch, context blocks may quote another repository file. */
   file: string;
-  /** 1-2 sentence semantic description of what changed in THIS file, written
-   *  from the diff hunks alone (no investigation). Required by the JSON schema
-   *  for schema-enforced engines; optional here so a marker engine that omits
-   *  it still yields a valid guide — the UI simply renders nothing. */
+  /** Short explanation of this block's role in the section. Optional for legacy guides. */
   summary?: string;
 }
 
@@ -31,23 +42,24 @@ export interface GuideSection {
   /** Concept-level title, e.g. "Payment localization module" — never a filename paraphrase. */
   title: string;
   /** Markdown prose: what changed, why it exists, and its key implications.
-   *  Semantic order (core first, consequences next, glue grouped last) is
-   *  carried by the array position, not by any label field. */
+   *  Reading order follows the feature lifecycle where applicable. */
   overview: string;
-  /** File references into the provided changeset. Usually 1..n, but a
+  /** Focused code blocks or legacy whole-file references. Usually 1..n, but a
    *  deliberate prose-only context section (no diffs, real overview text) is
    *  a valid model output and is preserved as-is rather than dropped. */
   diffs: GuideDiffRef[];
 }
 
 export interface CodeGuideOutput {
+  /** Focused guides require explicit changed-line coverage; legacy guides remain file-based. */
+  focused?: true;
   /** From the PR title when a PR is given, otherwise derived from the changes. */
   title: string;
   /** 1-2 sentence framing shown under the title: why this changeset exists. */
   intent: string;
-  /** Ordered sections: core first, consequence next, support last. */
+  /** Ordered chapters, with supporting steps following their entry points. */
   sections: GuideSection[];
-  /** Changed files the model didn't place — rendered in a trailing "Everything else" section. */
+  /** Legacy file-based guides render these in a trailing "Everything else" section. */
   unplacedFiles?: string[];
 }
 

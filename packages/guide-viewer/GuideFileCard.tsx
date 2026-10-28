@@ -11,10 +11,13 @@ function estimateDiffHeight(patch: string): number {
 
 interface GuideFileCardProps {
   file: DiffFile;
+  blockId?: string;
+  fullFile?: DiffFile;
+  contextOnly?: boolean;
   summary?: string;
   focused: boolean;
-  revealTarget: { filePath: string; token: number } | null;
-  onActivate: (filePath: string) => void;
+  revealTarget: { filePath: string; token: number; blockId?: string } | null;
+  onActivate: (filePath: string, blockId?: string) => void;
 }
 
 /**
@@ -24,6 +27,9 @@ interface GuideFileCardProps {
  */
 export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   file,
+  blockId,
+  fullFile,
+  contextOnly,
   summary,
   focused,
   revealTarget,
@@ -33,10 +39,12 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const scrollPositionRef = useRef(0);
   const [collapsed, setCollapsed] = useState(false);
-  const fileList = useMemo(() => [file], [file]);
-  const { mounted, register, requestMount } = useGuideFileWindow(file.path, focused);
-  const diffHeight = useMemo(() => estimateDiffHeight(file.patch), [file.patch]);
-  const target = revealTarget?.filePath === file.path ? revealTarget : null;
+  const [expandedContext, setExpandedContext] = useState(false);
+  const shownFile = expandedContext && fullFile ? fullFile : file;
+  const fileList = useMemo(() => [shownFile], [shownFile]);
+  const { mounted, register, requestMount } = useGuideFileWindow(blockId ?? file.path, focused);
+  const diffHeight = useMemo(() => estimateDiffHeight(shownFile.patch), [shownFile.patch]);
+  const target = revealTarget?.filePath === file.path && (!blockId || revealTarget.blockId === blockId) ? revealTarget : null;
   const renderedHeight = collapsed ? 49 : diffHeight;
 
   // A navigation target can live far outside the current outer window or in a
@@ -46,7 +54,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
     if (!target) return;
     setCollapsed(false);
     requestMount();
-    onActivate(file.path);
+    onActivate(file.path, blockId);
     const raf = requestAnimationFrame(() => {
       shellRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
@@ -70,16 +78,28 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
     <div
       ref={attachShell}
       data-guide-file-shell={file.path}
+      data-guide-block={blockId}
       className="scroll-mt-4"
       onPointerEnter={() => {
         requestMount();
-        onActivate(file.path);
+        onActivate(file.path, blockId);
       }}
       onFocusCapture={() => {
         requestMount();
-        onActivate(file.path);
+        onActivate(file.path, blockId);
       }}
     >
+      {blockId && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 px-1 text-[11px] text-muted-foreground">
+          <span>{contextOnly ? 'Unchanged context' : 'Focused diff'}</span>
+          {fullFile && fullFile.patch !== file.patch && (
+            <button type="button" className="underline underline-offset-2 hover:text-foreground"
+              aria-expanded={expandedContext} onClick={() => { setExpandedContext(value => !value); scrollPositionRef.current = 0; }}>
+              {expandedContext ? 'Show focused block' : 'Show full file diff'}
+            </button>
+          )}
+        </div>
+      )}
       {summary && (
         <p className="mb-1.5 px-1 text-xs leading-relaxed text-muted-foreground">
           {renderInlineMarkdown(summary)}
@@ -93,8 +113,10 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
       >
         {mounted ? (
           <DiffRenderer
-            {...getDiffRendererProps({ file, focused })}
+            {...getDiffRendererProps({ file: shownFile, focused, blockId, contextOnly })}
             files={fileList}
+            sourceSide={contextOnly ? 'new' : undefined}
+            {...(blockId ? { contextExpansionAvailable: false } : {})}
             fileScrollTarget={target}
             fileOrder="list"
             mountCollapsed={collapsed}

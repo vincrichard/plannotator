@@ -15,12 +15,16 @@ import type { DiffFile } from './types';
 export interface GuideRevealTarget {
   path: string;
   token: number;
+  lineNumber?: number;
+  side?: 'old' | 'new';
 }
 
 /** The host's active global-search match, if it has a search. */
 export interface GuideActiveSearchMatch {
   id: string;
   filePath: string;
+  lineNumber?: number;
+  side?: 'addition' | 'deletion' | 'context';
 }
 
 /**
@@ -40,11 +44,18 @@ export interface GuideDiffRendererProps {
   /** The focused card is the keyboard/annotation target. */
   isActive: boolean;
   allowScrollChaining: true;
+  /** Focused excerpts must not be replaced by live full-file augmentation. */
+  contextExpansionAvailable?: boolean;
+  /** An unchanged repository excerpt anchors all interactions to current source. */
+  sourceSide?: 'new';
 }
 
 export interface GuideDiffRendererContext {
   file: DiffFile;
   focused: boolean;
+  /** Stable block identity, separate from source coordinates shared by comments. */
+  blockId?: string;
+  contextOnly?: boolean;
 }
 
 export interface GuideHostValue<P extends object = Record<string, unknown>> {

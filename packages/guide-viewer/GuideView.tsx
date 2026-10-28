@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CodeGuideData, GuideSection } from '@plannotator/core/guide';
+import type { CodeGuideData, GuideSection, GuideDiffRef } from '@plannotator/core/guide';
 import type { DiffFile } from './types';
+import { isLineRangeInPatch } from '@plannotator/core/diff-files';
+import { analyzeGuideCoverage, resolveGuideBlock } from '@plannotator/core/guide-blocks';
 import { useGuideHost } from './host';
 import { renderInlineMarkdown } from './renderInlineMarkdown';
 import { GuideSectionCard } from './GuideSectionCard';
@@ -22,16 +24,33 @@ interface GuideViewProps {
   headerActions?: React.ReactNode;
 }
 
+export interface ResolvedGuideBlock {
+  id: string;
+  ref: GuideDiffRef;
+  file: DiffFile;
+  fullFile?: DiffFile;
+}
+
 export interface ResolvedGuideSections {
+  sectionBlocks?: ResolvedGuideBlock[][];
   sectionFiles: DiffFile[][];
   unplacedFiles: DiffFile[];
 }
 
 /** Resolve guide refs against the current patch while preserving generated
- * order. First placement wins globally; stale refs remain in chapter chips but
- * are omitted from CodeView items. */
+ * order. Focused refs keep distinct block identities; legacy refs retain
+ * first-file placement. Invalid refs remain visible through coverage feedback. */
 export function resolveGuideSectionFiles(guide: CodeGuideData, files: DiffFile[]): ResolvedGuideSections {
   const filesByPath = new Map(files.map((file) => [file.path, file]));
+  if (guide.focused) {
+    const sectionBlocks = guide.sections.map((section, sectionIndex) => section.diffs.flatMap((ref, index) => {
+      const result = resolveGuideBlock(ref, files);
+      if ('error' in result) return [];
+      return [{ id: ref.id ?? `block:${sectionIndex}:${index}`, ref, file: result.file,
+        fullFile: ref.kind === 'context' ? undefined : filesByPath.get(ref.file) }];
+    }));
+    return { sectionBlocks, sectionFiles: sectionBlocks.map(blocks => blocks.map(block => block.file)), unplacedFiles: [] };
+  }
   const seen = new Set<string>();
   const sectionFiles = guide.sections.map((section) => {
     const resolved: DiffFile[] = [];
@@ -75,7 +94,16 @@ export const GuideView: React.FC<GuideViewProps> = ({
   const resolved = useMemo(() => resolveGuideSectionFiles(guide, host.files), [guide, host.files]);
   // Only the guide's own files register shells; in-app the review may hold many more.
   const guideFileCount = resolved.sectionFiles.reduce((n, files) => n + files.length, 0) + resolved.unplacedFiles.length;
-  const hasUnplaced = (guide.unplacedFiles?.length ?? 0) > 0;
+  const hasUnplaced = !guide.focused && (guide.unplacedFiles?.length ?? 0) > 0;
+  const coverage = useMemo(() => guide.focused ? analyzeGuideCoverage(guide, host.files) : null, [guide, host.files]);
+  const [focusedBlock, setFocusedBlock] = useState<string | null>(null);
+  const blocks = resolved.sectionBlocks?.flat() ?? [];
+  const currentBlock = blocks.find(block => block.id === focusedBlock && (!focusedFile || block.file.path === focusedFile))
+    ?? blocks.find(block => block.file.path === focusedFile) ?? blocks[0];
+  const activateBlock = (path: string, blockId?: string) => {
+    if (blockId) setFocusedBlock(blockId);
+    onFocusFile(path);
+  };
   // The header counts sections, so the cards do too: "Everything else" is unnumbered.
   const cardTotal = guide.sections.length;
   const reviewedCount = reviewed.filter(Boolean).length;
@@ -85,27 +113,42 @@ export const GuideView: React.FC<GuideViewProps> = ({
     ?? null;
 
   const localRevealTokenRef = useRef(0);
-  const [localRevealTarget, setLocalRevealTarget] = useState<{ filePath: string; token: number } | null>(null);
+  const [localRevealTarget, setLocalRevealTarget] = useState<{ filePath: string; token: number; blockId?: string } | null>(null);
   const externalRevealTarget = host.revealFile
-    ? { filePath: host.revealFile.path, token: host.revealFile.token }
+    ? { filePath: host.revealFile.path, token: host.revealFile.token, lineNumber: host.revealFile.lineNumber, side: host.revealFile.side }
     : null;
-  const revealTarget = externalRevealTarget ?? localRevealTarget;
+  const [lastExternalReveal, setLastExternalReveal] = useState<number | undefined>();
+  useEffect(() => {
+    if (host.revealFile?.token !== lastExternalReveal) {
+      setLastExternalReveal(host.revealFile?.token);
+      setLocalRevealTarget(null);
+    }
+  }, [host.revealFile?.token, lastExternalReveal]);
+  const rawRevealTarget: { filePath: string; token: number; blockId?: string; lineNumber?: number; side?: 'old' | 'new' } | null = localRevealTarget ?? externalRevealTarget;
+  const revealTarget = rawRevealTarget && guide.focused
+    ? { ...rawRevealTarget, blockId: rawRevealTarget.blockId
+      ?? blocks.find(block => block.file.path === rawRevealTarget.filePath && (!rawRevealTarget.lineNumber
+        || isLineRangeInPatch(block.file.patch, rawRevealTarget.lineNumber, rawRevealTarget.lineNumber, rawRevealTarget.side ?? 'new')))?.id
+      ?? blocks.find(block => block.file.path === rawRevealTarget.filePath)?.id }
+    : rawRevealTarget;
 
   useEffect(() => {
     if (!revealTarget) return;
+    if ('blockId' in revealTarget && typeof revealTarget.blockId === 'string') setFocusedBlock(revealTarget.blockId);
     onFocusFile(revealTarget.filePath);
     // Token identifies a navigation event; callback identity must not replay it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealTarget?.filePath, revealTarget?.token]);
 
   const handleRequestReveal = useCallback(
-    (filePath: string) => {
+    (filePath: string, blockId?: string) => {
+      if (blockId) setFocusedBlock(blockId);
       onFocusFile(filePath);
-      if (host.onRevealFile) {
+      if (host.onRevealFile && !blockId) {
         host.onRevealFile(filePath);
       } else {
         localRevealTokenRef.current += 1;
-        setLocalRevealTarget({ filePath, token: localRevealTokenRef.current });
+        setLocalRevealTarget({ filePath, blockId, token: localRevealTokenRef.current });
       }
     },
     [onFocusFile, host.onRevealFile],
@@ -118,7 +161,9 @@ export const GuideView: React.FC<GuideViewProps> = ({
   const activeSearchMatch = host.activeSearchMatch;
   useEffect(() => {
     if (!activeSearchMatch) return;
-    handleRequestReveal(activeSearchMatch.filePath);
+    const matchingBlock = blocks.find(block => block.file.path === activeSearchMatch.filePath && (!activeSearchMatch.lineNumber
+      || isLineRangeInPatch(block.file.patch, activeSearchMatch.lineNumber, activeSearchMatch.lineNumber, activeSearchMatch.side === 'deletion' ? 'old' : 'new')));
+    handleRequestReveal(activeSearchMatch.filePath, matchingBlock?.id);
   }, [activeSearchMatch?.id, activeSearchMatch?.filePath, handleRequestReveal]);
 
   const unplacedSection = useMemo<GuideSection | null>(
@@ -179,19 +224,35 @@ export const GuideView: React.FC<GuideViewProps> = ({
         )}
       </div>
 
+      {coverage && (
+        <details className="mt-4 rounded-lg border border-border/50 bg-muted/20 px-4 py-3" open={!coverage.complete}>
+          <summary className="cursor-pointer text-sm font-medium">
+            {coverage.complete ? 'Complete coverage' : 'Guide incomplete'} · {coverage.coveredLines}/{coverage.totalLines} changed lines explained
+          </summary>
+          {!coverage.complete && <>
+            <p className="mt-2 text-xs text-muted-foreground">The author can add or replace individual blocks to address these gaps. The ordinary diff remains available.</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+              {coverage.issues.map((issue, index) => <li key={`${issue.blockId ?? issue.file}:${index}`}>{issue.message}</li>)}
+            </ul>
+          </>}
+        </details>
+      )}
+
       <div className="mt-6 space-y-4">
         {guide.sections.map((section, index) => (
           <GuideSectionCard
             key={`${section.title}:${index}`}
             section={section}
             files={resolved.sectionFiles[index] ?? []}
+            blocks={resolved.sectionBlocks?.[index]}
+            focusedBlock={currentBlock?.id}
             index={index}
             total={cardTotal}
             reviewed={!!reviewed[index]}
             onToggleReviewed={() => onToggleReviewed(index)}
             focusedFile={effectiveFocusedFile}
             revealTarget={revealTarget}
-            onActivate={onFocusFile}
+            onActivate={activateBlock}
             onRequestReveal={handleRequestReveal}
           />
         ))}
@@ -206,7 +267,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
             numbered={false}
             focusedFile={effectiveFocusedFile}
             revealTarget={revealTarget}
-            onActivate={onFocusFile}
+            onActivate={activateBlock}
             onRequestReveal={handleRequestReveal}
           />
         )}

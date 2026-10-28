@@ -8,6 +8,7 @@ let codeViewMounts = 0;
 let codeViewUnmounts = 0;
 let scrollTargets: Array<Record<string, unknown>> = [];
 let lastCodeViewProps: Record<string, unknown> | null = null;
+let lastToolbarProps: Record<string, unknown> | null = null;
 let toolbarSelections: Array<SelectedLineRange | null> = [];
 let workerPoolReady = true;
 
@@ -107,6 +108,7 @@ mock.module('@pierre/diffs/react', () => ({
 
 mock.module('./ToolbarHost', () => ({
   ToolbarHost: React.forwardRef(function MockToolbarHost(_props, ref) {
+    lastToolbarProps = _props;
     useImperativeHandle(ref, () => ({
       handleLineSelectionEnd: (range: SelectedLineRange | null) => {
         toolbarSelections.push(range);
@@ -171,6 +173,7 @@ afterEach(async () => {
   scrollTargets = [];
   lastCodeViewProps = null;
   toolbarSelections = [];
+  lastToolbarProps = null;
   workerPoolReady = true;
 });
 
@@ -262,13 +265,16 @@ describe('AllFilesCodeView compact-touch line selection', () => {
   // controlled, and the reconcile effect clears the highlight whenever
   // pendingSelection is null, so a statically-null prop would wipe the range
   // the preserve branch just painted.
-  function Harness({ compactTouchLayout, onSelection }: {
+  function Harness({ compactTouchLayout, onSelection, sourceSide }: {
     compactTouchLayout: boolean;
+    sourceSide?: 'new';
     onSelection?: (range: SelectedLineRange | null) => void;
   }) {
     const [pendingSelection, setPendingSelection] = useState<SelectedLineRange | null>(null);
     return view({
       compactTouchLayout,
+      sourceSide,
+      diffStyle: 'split',
       pendingSelection,
       onLineSelection: (range) => {
         onSelection?.(range);
@@ -280,13 +286,14 @@ describe('AllFilesCodeView compact-touch line selection', () => {
   async function mount(
     compactTouchLayout: boolean,
     onSelection?: (range: SelectedLineRange | null) => void,
+    sourceSide?: 'new',
   ) {
     host = document.createElement('div');
     host.style.height = '400px';
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => {
-      root!.render(<Harness compactTouchLayout={compactTouchLayout} onSelection={onSelection} />);
+      root!.render(<Harness compactTouchLayout={compactTouchLayout} onSelection={onSelection} sourceSide={sourceSide} />);
       await new Promise((resolve) => setTimeout(resolve, 25));
     });
   }
@@ -331,6 +338,32 @@ describe('AllFilesCodeView compact-touch line selection', () => {
     expect(toolbarSelections).toEqual([range]);
   });
 
+  test.skipIf(!hasDom)('anchors unchanged repository context to current source for selection, mobile capture and the discussion composer', async () => {
+    const observedSelections: Array<SelectedLineRange | null> = [];
+    const oldRange: SelectedLineRange = { start: 42, end: 44, side: 'deletions', endSide: 'deletions' };
+    const expectedRange: SelectedLineRange = { ...oldRange, side: 'additions', endSide: 'additions' };
+    await mount(true, selection => observedSelections.push(selection), 'new');
+    const { options, item } = getSelectionCallbacks();
+    expect((lastCodeViewProps?.options as { diffStyle: string }).diffStyle).toBe('unified');
+    const selected = lastCodeViewProps?.onSelectedLinesChange as (value: unknown) => void;
+    await act(async () => selected({ id: item.id, range: oldRange }));
+    expect(observedSelections.at(-1)).toEqual(expectedRange);
+    await act(async () => options.onLineSelectionEnd?.(oldRange, { item }));
+    expect(lastCodeViewProps?.selectedLines).toEqual({ id: item.id, range: expectedRange });
+    expect(toolbarSelections).toEqual([]);
+    await act(async () => options.onGutterUtilityClick?.(oldRange, { item }));
+    expect(toolbarSelections).toEqual([expectedRange]);
+  });
+
+  test.skipIf(!hasDom)('retains old-side selection in ordinary diff blocks', async () => {
+    const range: SelectedLineRange = { start: 4, end: 8, side: 'deletions' };
+    await mount(false);
+    const { options, item } = getSelectionCallbacks();
+    await act(async () => options.onLineSelectionEnd?.(range, { item }));
+    expect(toolbarSelections).toEqual([range]);
+    expect((lastCodeViewProps?.options as { diffStyle: string }).diffStyle).toBe('split');
+  });
+
   test.skipIf(!hasDom)('keeps the incumbent desktop selection-to-composer transition', async () => {
     const range: SelectedLineRange = { start: 4, end: 8, side: 'additions' };
     await mount(false);
@@ -342,6 +375,29 @@ describe('AllFilesCodeView compact-touch line selection', () => {
     });
 
     expect(toolbarSelections).toEqual([range]);
+  });
+});
+
+describe('AllFilesCodeView excerpt actions', () => {
+  test.skipIf(!hasDom)('passes the rendered repository excerpt and new-side range to Ask agent and comment callbacks', async () => {
+    host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+    const contextFile: DiffFile = { ...file, path: 'entry.ts', patch: 'diff --git a/entry.ts b/entry.ts\n--- a/entry.ts\n+++ b/entry.ts\n@@ -42,1 +42,1 @@\n existingEntry();\n', additions: 0, deletions: 0 };
+    const asks: unknown[][] = [], comments: unknown[][] = [];
+    await render({ files: [contextFile], sourceSide: 'new', pendingSelection: { start: 42, end: 42, side: 'deletions' },
+      onAskAIForFile: (...args) => { asks.push(args); }, onAddAnnotationForFile: (...args) => { comments.push(args); } });
+    const item = (lastCodeViewProps?.initialItems as Array<{ id: string; type: 'diff' }>)[0];
+    await act(async () => {
+      (lastCodeViewProps?.options as { onLineSelectionEnd: (range: SelectedLineRange, context: { item: typeof item }) => void })
+        .onLineSelectionEnd({ start: 42, end: 42, side: 'deletions' }, { item });
+    });
+    await act(async () => {
+      await (lastToolbarProps?.onAskAI as (text: string) => unknown)('Why does this entry exist?');
+      (lastToolbarProps?.onAddAnnotation as (type: string, text: string) => void)('comment', 'Check the entry');
+    });
+    const selection = { file: contextFile, range: { start: 42, end: 42, side: 'additions' } };
+    expect(asks).toEqual([['entry.ts', 'Why does this entry exist?', selection]]);
+    expect(comments[0][0]).toBe('entry.ts');
+    expect(comments[0][8]).toEqual(selection);
   });
 });
 

@@ -124,6 +124,10 @@ function utf8Bytes(text: string): number {
  * on any failure — never returns a half result.
  */
 export async function shareGuide(snapshot: GuideSnapshot, opts: ShareGuideOptions): Promise<ShareGuideResult> {
+  // shortcut: the hosted viewer does not support focused blocks yet; remove when that viewer is deployed.
+  if (snapshot.guide.focused) {
+    throw new GuideShareError("The hosted viewer does not support focused guide blocks yet. Download the portable guide instead; it includes every code block and works offline.");
+  }
   const doFetch = opts.fetch ?? fetch;
   let data: string;
   let key: string | undefined;

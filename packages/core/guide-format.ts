@@ -10,7 +10,8 @@
  */
 
 import { parseDiffToFiles } from "./diff-files";
-import type { CodeGuideOutput, GuideDiffRef, GuideSection } from "./guide";
+import { analyzeGuideCoverage, isGuideLineRange, resolveGuideBlock } from "./guide-blocks";
+import type { CodeGuideOutput, GuideDiffRef, GuideLineRange, GuideSection } from "./guide";
 
 /** Discriminator for a portable guided-review snapshot. */
 export const GUIDE_SNAPSHOT_KIND = "plannotator-guided-review" as const;
@@ -138,6 +139,7 @@ export function buildGuideSnapshot(input: BuildGuideSnapshotInput): GuideSnapsho
     version: GUIDE_SNAPSHOT_VERSION,
     exportedAt: input.exportedAt ?? new Date().toISOString(),
     guide: {
+      ...(guide.focused && { focused: true }),
       title: guide.title,
       intent: guide.intent,
       sections: guide.sections,
@@ -232,15 +234,45 @@ function optNum(record: Record<string, unknown>, key: string, path: string): Par
 function parseDiffRef(input: unknown, path: string): Parsed<GuideDiffRef> {
   const object = asRecord(input, path);
   if (isFail(object)) return object;
-  const s = strict(object.value, ["file", "summary"], path);
+  const s = strict(object.value, ["file", "summary", "id", "kind", "oldRange", "newRange", "source"], path);
   if (isFail(s)) return s;
   const file = str(s.value.file, `${path}.file`, { nonEmpty: true });
   if (isFail(file)) return file;
   const summary = optStr(s.value, "summary", path);
   if (isFail(summary)) return summary;
+  const id = optStr(s.value, "id", path);
+  if (isFail(id)) return id;
+  if (id.value !== undefined && !id.value.trim()) return fail(`${path}.id`, "Expected a non-empty block ID");
+  const kind = s.value.kind;
+  if (kind !== undefined && kind !== "diff" && kind !== "context") return fail(`${path}.kind`, "Expected diff or context");
+  const ranges: { oldRange?: GuideLineRange; newRange?: GuideLineRange } = {};
+  for (const key of ["oldRange", "newRange"] as const) {
+    if (s.value[key] === undefined) continue;
+    const range = asRecord(s.value[key], `${path}.${key}`);
+    if (isFail(range)) return range;
+    const fields = strict(range.value, ["start", "end"], `${path}.${key}`);
+    if (isFail(fields)) return fields;
+    if (!isGuideLineRange(fields.value)) return fail(`${path}.${key}`, "Expected positive inclusive start/end line numbers");
+    ranges[key] = { start: fields.value.start, end: fields.value.end };
+  }
+  const source = optStr(s.value, "source", path);
+  if (isFail(source)) return source;
+  if (kind === "context") {
+    if (!ranges.newRange || ranges.oldRange || source.value === undefined) return fail(path, "Context requires newRange and captured source only");
+    if (file.value.startsWith("/") || file.value.includes("\\") || file.value.split("/").some(part => !part || part === "." || part === "..") || /[\x00-\x1f]/.test(file.value) || /^[A-Za-z]:/.test(file.value)) {
+      return fail(`${path}.file`, "Context must name a repository-relative file");
+    }
+  } else if (source.value !== undefined) return fail(`${path}.source`, "Only context blocks carry captured source");
   return {
     ok: true,
-    value: summary.value === undefined ? { file: file.value } : { file: file.value, summary: summary.value },
+    value: {
+      file: file.value,
+      ...(summary.value !== undefined && { summary: summary.value }),
+      ...(id.value !== undefined && { id: id.value }),
+      ...(kind !== undefined && { kind: kind as "diff" | "context" }),
+      ...ranges,
+      ...(source.value !== undefined && { source: source.value }),
+    },
   };
 }
 
@@ -267,8 +299,9 @@ function parseGuide(input: unknown): Parsed<GuideSnapshotGuide> {
   const path = "$.guide";
   const object = asRecord(input, path);
   if (isFail(object)) return object;
-  const s = strict(object.value, ["title", "intent", "sections", "unplacedFiles", "reviewed"], path);
+  const s = strict(object.value, ["title", "intent", "sections", "unplacedFiles", "reviewed", "focused"], path);
   if (isFail(s)) return s;
+  if (s.value.focused !== undefined && s.value.focused !== true) return fail(`${path}.focused`, "Expected true");
   const title = str(s.value.title, `${path}.title`, { nonEmpty: true });
   if (isFail(title)) return title;
   const intent = str(s.value.intent, `${path}.intent`);
@@ -316,6 +349,7 @@ function parseGuide(input: unknown): Parsed<GuideSnapshotGuide> {
   return {
     ok: true,
     value: {
+      ...(s.value.focused === true && { focused: true }),
       title: title.value,
       intent: intent.value,
       sections,
@@ -466,6 +500,10 @@ export function parseGuideSnapshot(input: unknown): GuideSnapshotParseResult {
   if (isFail(guide)) return guide;
   const review = parseReview(s.value.review);
   if (isFail(review)) return review;
+  if (guide.value.focused) {
+    const coverage = analyzeGuideCoverage(guide.value, parseDiffToFiles(review.value.rawPatch));
+    if (!coverage.complete) return fail("$.guide.sections", coverage.issues.map(issue => issue.message).join("\n"));
+  }
   const source = parseSource(s.value.source);
   if (isFail(source)) return source;
   const generator = parseGenerator(s.value.generator);
@@ -690,6 +728,33 @@ function describeSource(snapshot: GuideSnapshotV1): string {
   return parts.join(" ");
 }
 
+/** An exported excerpt keeps the original side/line numbers without needing a hosted viewer. */
+function renderFocusedBlockHtml(ref: GuideDiffRef, files: ReturnType<typeof parseDiffToFiles>): string {
+  const resolved = resolveGuideBlock(ref, files);
+  if ("error" in resolved) return `<p>${escapeHtmlText(resolved.error)}</p>`;
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+  const rows: string[] = [];
+  for (const line of resolved.file.patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (header) {
+      oldLine = Number(header[1]);
+      newLine = Number(header[3]);
+      inHunk = true;
+      rows.push(`<span class="pgr-hunk">${escapeHtmlText(line)}</span>`);
+    } else if (inHunk && (line[0] === "+" || line[0] === "-" || line[0] === " ")) {
+      const oldNumber = line[0] === "+" ? "" : String(oldLine++);
+      const newNumber = line[0] === "-" ? "" : String(newLine++);
+      const kind = line[0] === "+" ? "add" : line[0] === "-" ? "delete" : "context";
+      rows.push(`<span class="pgr-line ${kind}"><span class="pgr-number">${oldNumber}</span><span class="pgr-number">${newNumber}</span><code>${escapeHtmlText(line)}</code></span>`);
+    }
+  }
+  const ranges = [ref.oldRange && `old ${ref.oldRange.start}–${ref.oldRange.end}`, ref.newRange && `new ${ref.newRange.start}–${ref.newRange.end}`].filter(Boolean).join(", ");
+  const label = `${ref.file}${ranges ? ` · ${ranges}` : ""}${ref.kind === "context" ? " · Repository context" : ""}`;
+  return `<details open class="pgr-block"><summary>${escapeHtmlText(label)}</summary>${ref.summary ? `<pre class="prose">${escapeHtmlText(ref.summary)}</pre>` : ""}<pre class="pgr-code">${rows.length ? rows.join("") : escapeHtmlText(resolved.file.patch)}</pre></details>`;
+}
+
 /**
  * The no-JavaScript body: title, intent, every chapter's overview and file
  * list. Readable when guides.show is unreachable; replaced by the viewer once
@@ -697,9 +762,10 @@ function describeSource(snapshot: GuideSnapshotV1): string {
  */
 export function renderGuideFallbackHtml(snapshot: GuideSnapshotV1): string {
   const g = snapshot.guide;
+  const patchFiles = g.focused ? parseDiffToFiles(snapshot.review.rawPatch) : [];
   const sections = g.sections
     .map((section, index) => {
-      const files = section.diffs
+      const files = g.focused ? section.diffs.map(ref => renderFocusedBlockHtml(ref, patchFiles)).join("\n") : section.diffs
         .map(
           (ref) =>
             `<li><code>${escapeHtmlText(ref.file)}</code>${ref.summary ? ` — ${escapeHtmlText(ref.summary)}` : ""}</li>`,
@@ -708,7 +774,7 @@ export function renderGuideFallbackHtml(snapshot: GuideSnapshotV1): string {
       return `<section>
 <h2>${index + 1}. ${escapeHtmlText(section.title)}</h2>
 <pre class="prose">${escapeHtmlText(section.overview)}</pre>
-${files ? `<ul>${files}</ul>` : ""}
+${files ? (g.focused ? files : `<ul>${files}</ul>`) : ""}
 </section>`;
     })
     .join("\n");
@@ -720,7 +786,7 @@ ${files ? `<ul>${files}</ul>` : ""}
   const prLink = snapshot.source.pr?.url
     ? ` · <a href="${escapeHtmlAttribute(snapshot.source.pr.url)}" rel="noopener noreferrer">${escapeHtmlText(snapshot.source.pr.url)}</a>`
     : "";
-  return `<article class="pgr-fallback">
+  return `<article class="pgr-fallback${g.focused ? " pgr-focused" : ""}">
 <header>
 <h1>${escapeHtmlText(g.title)}</h1>
 <p class="meta">${escapeHtmlText(describeSource(snapshot))} · ${escapeHtmlText(snapshot.review.gitRef)}${prLink}</p>
@@ -729,7 +795,7 @@ ${genLine ? `<p class="meta">${genLine}</p>` : ""}
 </header>
 ${sections}
 ${unplaced}
-<footer class="meta">This is the plain-text version of a Plannotator Guided Review. Connect to the internet to load the full diff viewer.</footer>
+<footer class="meta">${g.focused ? "This portable Guided Review includes every focused code block and works offline. Code comments are available in the original review." : "This is the plain-text version of a Plannotator Guided Review. Connect to the internet to load the full diff viewer."}</footer>
 </article>`;
 }
 
@@ -744,6 +810,14 @@ html{color-scheme:light dark}
 body.pgr-fallback-body{margin:0;background:#f5f7f6}
 @keyframes pgr-reveal{to{opacity:1}}
 .pgr-fallback{opacity:0;animation:pgr-reveal 0s linear 2.5s forwards;max-width:72ch;margin:2rem auto;padding:0 1.25rem;font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1c2421}
+.pgr-focused{opacity:1;animation:none;max-width:110ch}
+.pgr-block{margin:1rem 0;border:1px solid #71807855;border-radius:.5rem;padding:.75rem}
+.pgr-block summary{cursor:pointer;overflow-wrap:anywhere;font-weight:600}
+.pgr-code{overflow:auto;font-size:13px;line-height:1.6;tab-size:4;margin:1rem 0 0}
+.pgr-line{display:block;width:max-content;min-width:100%}
+.pgr-line.add{background:#389b4b20}.pgr-line.delete{background:#c84b4b20}
+.pgr-number{display:inline-block;width:4.5em;text-align:right;padding-right:1em;opacity:.6;user-select:none}
+.pgr-hunk{display:block;opacity:.7}.pgr-code code{font-size:inherit}
 .pgr-fallback h1{font-size:1.75rem;line-height:1.2;margin:0 0 .5rem}
 .pgr-fallback h2{font-size:1.15rem;margin:1.75rem 0 .5rem}
 .pgr-fallback .meta{color:#5b6a64;font-size:.9rem;margin:.25rem 0}
@@ -766,6 +840,7 @@ export function createGuideHtml(snapshot: GuideSnapshotV1, options: GuideHtmlOpt
     description: snapshot.guide.intent,
     languages: detectGuideLanguages(snapshot.review.rawPatch),
     hosted: options.hosted,
+    staticOnly: snapshot.guide.focused,
   });
   const serialized = escapeJsonForHtmlScript(JSON.stringify(snapshot));
   return `<!doctype html>
@@ -826,6 +901,7 @@ interface GuideHeadInput {
   readonly languages: readonly string[];
   readonly hosted?: GuideHostedPage;
   readonly payloadUrl?: string;
+  readonly staticOnly?: boolean;
 }
 
 /** Shared `<head>` + viewer `<script>` for exported and hosted guide pages. */
@@ -837,7 +913,7 @@ function buildGuideHead(input: GuideHeadInput): { head: string; script: string }
   const cssUrl = new URL(input.viewer.css, base).href;
   const integrityAttr = (value?: string) => (value ? ` integrity="${escapeHtmlAttribute(value)}"` : "");
   const langs = input.viewer.langs ?? {};
-  const preloads = input.languages
+  const preloads = (input.staticOnly ? [] : input.languages)
     .map((lang) => langs[lang])
     .filter((path): path is string => typeof path === "string")
     .map((path) => `<link rel="modulepreload" href="${escapeHtmlAttribute(new URL(path, base).href)}" crossorigin="anonymous">`)
@@ -886,13 +962,14 @@ function buildGuideHead(input: GuideHeadInput): { head: string; script: string }
     `<title>${escapeHtmlText(input.title)} · Guided Review</title>`,
     hostedMeta,
     payloadMeta,
-    `<link rel="stylesheet" href="${escapeHtmlAttribute(cssUrl)}"${integrityAttr(input.viewer.cssIntegrity)} crossorigin="anonymous">`,
+    input.staticOnly ? "" : `<link rel="stylesheet" href="${escapeHtmlAttribute(cssUrl)}"${integrityAttr(input.viewer.cssIntegrity)} crossorigin="anonymous">`,
     preloads,
     `<style>${FALLBACK_STYLE}</style>`,
   ]
     .filter((line) => line.length > 0)
     .join("\n");
-  const script = `<script type="module" src="${escapeHtmlAttribute(jsUrl)}"${integrityAttr(input.viewer.jsIntegrity)} crossorigin="anonymous"></script>`;
+  // shortcut: keep focused exports self-contained until a compatible hosted viewer is deployed.
+  const script = input.staticOnly ? "" : `<script type="module" src="${escapeHtmlAttribute(jsUrl)}"${integrityAttr(input.viewer.jsIntegrity)} crossorigin="anonymous"></script>`;
   return { head, script };
 }
 

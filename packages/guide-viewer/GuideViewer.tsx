@@ -59,6 +59,7 @@ export function GuideViewer<P extends object>({ snapshot, DiffRenderer, getDiffR
   const files = useMemo<DiffFile[]>(() => parseDiffToFiles(snapshot.review.rawPatch), [snapshot.review.rawPatch]);
   const guide = useMemo<CodeGuideData>(
     () => ({
+      focused: snapshot.guide.focused,
       title: snapshot.guide.title,
       intent: snapshot.guide.intent,
       sections: snapshot.guide.sections,

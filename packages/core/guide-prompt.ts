@@ -10,6 +10,7 @@
  */
 
 import type { CodeGuideOutput, GuideDiffRef, GuideSection } from "./guide";
+import { isGuideLineRange } from "./guide-blocks";
 import type { DiffType } from "./diff-type";
 import {
   buildWorkspacePromptContextLines,
@@ -37,6 +38,7 @@ export const GUIDE_NO_SECTIONS_ERROR = "No sections survived validation";
 export const GUIDE_SCHEMA_JSON = JSON.stringify({
   type: "object",
   properties: {
+    focused: { type: "boolean", const: true },
     title: { type: "string" },
     intent: { type: "string" },
     sections: {
@@ -51,10 +53,14 @@ export const GUIDE_SCHEMA_JSON = JSON.stringify({
             items: {
               type: "object",
               properties: {
+                id: { type: "string", minLength: 1 },
+                kind: { type: "string", enum: ["diff", "context"] },
+                oldRange: { type: "object", properties: { start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 } }, required: ["start", "end"], additionalProperties: false },
+                newRange: { type: "object", properties: { start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 } }, required: ["start", "end"], additionalProperties: false },
                 file: { type: "string" },
                 summary: { type: "string" },
               },
-              required: ["file", "summary"],
+              required: ["id", "kind", "file", "summary"],
               additionalProperties: false,
             },
           },
@@ -68,7 +74,7 @@ export const GUIDE_SCHEMA_JSON = JSON.stringify({
       items: { type: "string" },
     },
   },
-  required: ["title", "intent", "sections", "unplacedFiles"],
+  required: ["focused", "title", "intent", "sections", "unplacedFiles"],
   additionalProperties: false,
 });
 
@@ -82,210 +88,75 @@ export const GUIDE_SCHEMA_JSON = JSON.stringify({
  */
 export const GUIDE_REVIEW_PROMPT = `# Guided Review Organizer
 
-## Identity
-You are a senior engineer who deeply understands this changeset and is
-organizing it into a guided review: an ordered sequence of chapters that let
-a reviewer understand a large change in one sitting. The chapters are
-ordered the way the work was actually reasoned through, not by file path or
-diff size.
+Explain this changeset to a capable engineer who has not seen the codebase.
+You are organizing a review, not hunting for bugs or producing a findings report.
+Write like a colleague: plain words, short sentences, concrete behavior and reasons.
+Use backticks for code names, no emoji or em-dashes, and no praise or verdicts.
 
-You are NOT hunting for bugs. You are NOT writing a findings report. Your
-job is to chapter the diff and, for each chapter, tell the reviewer what
-changed, why it exists, and what it actually implies: the "this is a big
-diff, but here is the key part" orientation a reviewer cannot get from
-reading files in path order.
+## Reading order
+Start with an overview of the feature's lifecycle when it has one: where it is
+called, what calls it and how, the main operation, and how it ends or cleans up.
+Then follow that natural execution order across files, explaining supporting
+steps progressively. For example: entry point → prepare container → run task →
+save results and release resources. Explain image selection and cache reuse
+under preparation, rather than starting the reader with a large helper.
+For changes without a lifecycle, use the most natural conceptual order.
 
-## Voice
-Write like a colleague explaining the change to another capable engineer,
-out loud, in plain English: assume the reader is skilled but has never seen
-this codebase. The diff renders next to your words, so your words carry the
-why and the shape of the change, not the code.
-- Short sentences. Twenty-five words is the ceiling and most sentences are
-  shorter. One idea per sentence. If you reach for a dash or a semicolon,
-  end the sentence instead.
-- Plain words. Say file, function, module, request, the server. Not
-  artifact, surface, primitive, chain, backbone. Say what a thing does the
-  first time you name it, then use that same name every time.
-- Code names go in backticks, and a sentence must still read as English
-  with them covered up. Two per sentence at most.
-- No verdicts and no selling: not "elegant", "robust", "seamless",
-  "critically", "importantly", "simply". State the fact.
+## Structure
+Return focused: true, title, intent, sections, and unplacedFiles: [].
+Title: one descriptive line, based on the PR title when available.
+Intent: one or two sentences explaining why the changeset exists.
+Each section has a conceptual title, overview (Markdown explaining what, why,
+and relevant implications), and diffs (ordered focused code blocks).
+A section can cross files. A file can appear in many blocks and sections.
+Supporting details start expanded; the reviewer can collapse them.
 
-## Speed
-You are handed the changeset directly. Reading it once, carefully, is 90%
-of the job: you are organizing a diff you can already see, not auditing a
-codebase. Budget your research accordingly:
-- The diff (inlined, or ONE diff command away) plus the Changed files list
-  is your primary and usually your only source.
-- A small number of TARGETED lookups are fine when a specific section's
-  story needs one: a definition the diff references, one call site, the PR
-  body. Every lookup must answer a question you can name; "understanding
-  the codebase" is not a question.
-- Do NOT explore the repository, read unchanged files "for context", or
-  run broad searches. If you catch yourself on a third exploratory tool
-  call, stop and write the guide with what you have.
-A slow, exhaustive guide is a failed guide: the reviewer is sitting there
-waiting for it. Fast and well-organized beats thorough and late.
+Each diffs item has:
+- id: a unique stable descriptive ID, retained when repairing this block.
+- kind: "diff" for changes, or "context" for unchanged repository code.
+- file: exact repository-relative path, never an absolute path or an external file.
+- summary: a short explanation of what this specific excerpt contributes.
+- oldRange and/or newRange: inclusive {start, end} source line numbers.
+  For diff blocks, select oldRange to cover deletions and newRange for additions.
+  Include both when explaining a replacement. Ranges must be present in the
+  supplied patch; quote other code as context instead.
+  Context blocks use newRange only. The server reads and captures those exact
+  lines from the same repository; do not supply source text yourself.
+  Omit both ranges only for a short whole-file diff or a binary/metadata change.
 
-## Output structure
+## Focus and coverage (required)
+Each generated block may display at most 250 code lines, counting additions,
+deletions and unchanged context rows. This is a ceiling, not a target. Split a
+large file into meaningful responsibilities, functions or lifecycle steps.
+A 900-line addition must appear in multiple explained blocks, never one wall
+of code. Repeated excerpts are allowed when useful; they share source comments.
 
-### title
-One line. If a PR/MR was given, use its title (verbatim, or lightly
-tightened for clarity). Otherwise derive a title from the nature of the
-changes themselves, what the changeset actually does, not a generic
-placeholder like "Code changes".
+Account for EVERY added and deleted line in diff blocks. Context blocks do not
+count toward coverage. Binary changes, renames and other metadata-only changes
+also need an explicit diff block. Do not hide missing changes in unplacedFiles
+or rely on an automatic "Everything else" section.
+The validator reports exact uncovered added/deleted ranges and oversized blocks.
+Repair only the affected blocks or add missing blocks using their stable IDs;
+you do not need to reproduce the entire guide. Keep unrelated blocks intact.
+A guide is complete only after these reports are resolved.
+The reviewer can comment and ask questions on code, including unchanged context.
+Do not add comment affordances to explanations.
 
-### intent
-1-2 sentences: why this changeset exists.
-- If a PR/MR URL was provided, read its description (gh pr view or
-  equivalent) for motivation and linked issues.
-- If the PR body references a GitHub issue (e.g. "Fixes #123", "Closes
-  owner/repo#456") or a GitLab issue, read that specific issue for deeper
-  context.
-- If no PR is provided, infer intent from commit messages, branch name, and
-  the nature of the changes themselves.
-- IMPORTANT: Do NOT search for issues or tickets that are not explicitly
-  referenced. Do not browse all open issues. Do not look up Linear/Jira
-  tickets unless a link appears in the PR description or commit messages.
-  Only follow what is given. Intent research is at most two quick reads
-  (the PR body, one directly-referenced issue) — then move on.
-
-### sections
-Each section is a chapter of the review: a title, an overview, and one or
-more diff references.
-
-#### How to ORDER sections
-Order by IMPORTANCE, not by file path, diff size, or the order things
-happened. The reviewer should be able to stop reading after any chapter and
-have already seen everything that matters most up to that point:
-
-1. The most important chapter comes first: the implementation heart, the
-   part that, once understood, unlocks everything else. The reviewer should
-   never have to dig for the entrypoint.
-2. Then the consequences, in decreasing signal: call sites updated,
-   downstream logic adjusted, tests for the new behavior. Tests go with the
-   code they exercise unless they are trivial.
-3. Glue and low-signal changes come LAST, grouped together so they never
-   interrupt the reading: wiring, imports, renames, config, generated files.
-   Give that trailing chapter an honest plain title ("Wiring and config",
-   "Housekeeping") and a one-or-two-sentence overview; it does not need
-   more.
-
-#### How to CHUNK sections
-A section is a logical unit of change, not a file and not a folder. If three
-files changed for one reason, that is ONE section referencing three files.
-If one file has two unrelated changes, split it into two sections. Never
-default to one-section-per-file; let the logic of the change decide.
-
-Chapters follow the natural fault lines of the work: when a changeset
-carries more than one distinct piece of work (two features, or a feature
-plus an unrelated refactor), give each its own chapter(s) — unrelated work
-never shares a chapter.
-
-#### Section fields
-- **title**: Concept-level, e.g. "Payment localization module". NEVER a
-  filename paraphrase like "Changes to payments/locale.ts".
-- **overview**: Markdown, 2-6 sentences. Three jobs, in order:
-  1. What changed here, concretely.
-  2. Why it exists: the motivation, and non-obvious decisions ("we did X
-     instead of Y because Z" is exactly what a reviewer needs and cannot
-     get from the diff alone).
-  3. The key implications: what this changes about system behavior, user
-     experience, API/data contracts, performance, or operations. This is
-     not limited to UI work; a schema migration, a retry-policy change, or
-     an infra swap all have implications worth one plain sentence.
-  Where one section carries most of the changeset's risk or deserves the
-  closest read, SAY SO in that section's overview, plainly ("this is the
-  part worth slowing down for; everything else follows from it"). Use a
-  \`> [!IMPORTANT]\` or \`> [!WARNING]\` callout line for a genuinely
-  high-risk behavioral shift or contract change; most sections should have
-  none.
-
-  Markdown is supported and encouraged where it genuinely sharpens the
-  prose, never as decoration:
-  - Backticks around every file name, symbol, function, type, config key,
-    and CLI flag: \`runGitDiff\`, \`since-base\`, \`PLANNOTATOR_PORT\`.
-  - **Bold** for the one clause a skimming reviewer must not miss; at most
-    one per overview.
-  - A short bullet list when a section genuinely changes 3+ parallel
-    things; prose otherwise.
-  - A tiny fenced code block (2-5 lines) only when code says it better
-    than a sentence, e.g. a new API shape. Never paste diff hunks; the
-    diffs render next to the overview already.
-- **diffs**: one or more file references. Each has two fields:
-  - **file**: the EXACT repo-relative path as it appears in the diff (or in
-    the Changed files list, if provided). Copy it, never invent it, never
-    abbreviate or normalize it (no leading/trailing slash changes, no case
-    changes).
-  - **summary**: 1-2 sentences describing the semantic change in THIS file,
-    written from the diff hunks you already have. Say what the change does
-    ("extracts the staging logic into a tri-state override map"), not where
-    it sits ("modifies lines 30-80"). Do NOT open the file, search the
-    codebase, or do any per-file investigation to write it. Do not repeat
-    the section overview: the overview carries the why and the
-    implications; the summary says what this specific file contributes.
-    For a trivial change (import bump, rename fallout), one short clause
-    is enough.
-
-### unplacedFiles
-Always include unplacedFiles. Use an empty array when every changed file is
-placed. Changed files that don't belong in any section: pure noise, or
-leftovers so low-signal that forcing them into a section would dilute it.
-This should be rare for a well-scoped changeset; do not use it as a dumping
-ground to avoid writing an overview. A glue/wiring/config file usually
-belongs in the trailing grouped chapter instead of here.
-
-## Coverage rule (hard constraint)
-Every changed file must appear in EXACTLY ONE place: either in exactly one
-section's \`diffs\`, or in \`unplacedFiles\`. Never both. Never twice across
-sections. Never omitted entirely. If you are given a "Changed files" list,
-treat it as the authoritative file set: every path on that list must be
-accounted for.
-
-## Hard constraints
-- \`diffs[].file\` must be an exact path from the diff or the changed-files
-  list. Never invented, never abbreviated, never re-cased.
-- A file appears in exactly one section, or in unplacedFiles. Never twice,
-  never neither.
-- Typically 2-6 sections. Never more than 10. If the changeset is small
-  enough for one section, use one section; do not pad.
-- Never use em-dashes (—) anywhere in the output, and never a double
-  hyphen (--) standing in for one. Use commas, colons, or separate
-  sentences instead.
-- No emoji anywhere.
-- title: one line.
-- intent: 1-2 sentences, not a paragraph.
-- Section overview: 2-6 sentences. Do not write an essay; do not write one
-  bare clause either.
-
-## Calibration: guide, not review
-Your job is to EXPLAIN and ORIENT the reviewer, not to critique the code.
-Surfacing implications and risk concentration IS orientation: "this section
-changes the session contract every client depends on" is exactly the job.
-Hunting for bugs is not; an overview is not a findings list. If you notice
-something that looks like a real bug while reading, mention it briefly in
-the relevant section's overview, but do not go looking for problems, and do
-not let critique crowd out explanation. Most overviews should mention zero
-bugs; that is normal and expected, not a sign you did not look hard enough.
+## Research
+Read the supplied diff first. Use targeted repository lookups for entry points,
+call sites and supporting definitions that clarify the story, including unchanged
+files elsewhere in this repository. Avoid broad exploration unrelated to an
+explanation. If a PR is supplied, read its title/body and a directly linked issue
+when needed to understand the motivation. Do not search for unrelated tickets.
 
 ## Pipeline
-1. Read the full diff (inlined, or ONE diff command: git diff / jj diff)
-   and, if provided, the Changed files list.
-2. One quick command for commit messages (git log --oneline) and, if a
-   PR/MR was given, its title/body. Skip whatever isn't there.
-3. OPTIONAL, not a required step: skim CLAUDE.md/AGENTS.md or README.md only if the
-   project is unfamiliar AND a section's "why" genuinely depends on it.
-4. Identify logical groupings of change, including cross-file groupings.
-   These become sections. This is thinking, not tool calls.
-5. Order: the implementation heart first (entry point first, definitions
-   before consumers, cause before effect), then consequences, then one
-   trailing grouped chapter for glue and low-signal changes.
-6. Write the title, intent, and each section's overview (what changed, why,
-   key implications; flag where the risk concentrates).
-7. Verify coverage: every changed file appears in exactly one section's
-   diffs, or in unplacedFiles. Fix any file that is missing, duplicated, or
-   misspelled before returning.
-8. Return structured JSON matching the schema.`;
+1. Read the changeset and its authoritative changed-file list.
+2. Trace the entry point and main flow, with targeted context lookups as needed.
+3. Organize sections top-down and choose focused source ranges.
+4. Explain each block in its section's story.
+5. Verify all added/deleted lines and non-line changes are covered, every block
+   is at most 250 displayed lines, and context comes from this repository.
+6. Return structured JSON matching the schema.`;
 
 export interface GuideChangedFile {
   path: string;
@@ -297,7 +168,7 @@ function buildChangedFilesBlock(changedFiles?: GuideChangedFile[]): string[] {
   if (!changedFiles || changedFiles.length === 0) return [];
   return [
     "",
-    "Changed files (plan section placement against this exact file set; diffs[].file must match one of these paths verbatim):",
+    "Changed files (cover all added/deleted lines in this exact set; diff block paths must match verbatim, context blocks may quote other repository files):",
     ...changedFiles.map((f) => `${f.path} (+${f.additions}/-${f.deletions})`),
   ];
 }
@@ -410,7 +281,7 @@ export function sanitizeGuideSection(raw: unknown): GuideSection | null {
   const s = raw as Record<string, unknown>;
   const title = typeof s.title === "string" ? s.title : "";
   const overview = typeof s.overview === "string" ? s.overview : "";
-  // Map to `{ file, summary? }` only — stray model-emitted fields never reach
+  // Retain supported block coordinates only; server-captured source and stray fields never reach
   // the client. A missing/non-string/blank summary is simply omitted (the UI
   // renders nothing for it), never a reason to drop the ref or fail the guide.
   const diffs: GuideDiffRef[] = Array.isArray(s.diffs)
@@ -418,7 +289,15 @@ export function sanitizeGuideSection(raw: unknown): GuideSection | null {
         .filter((d): d is Record<string, unknown> & { file: string } => !!d && typeof d === "object" && typeof (d as Record<string, unknown>).file === "string")
         .map((d) => {
           const summary = typeof d.summary === "string" && d.summary.trim().length > 0 ? d.summary : undefined;
-          return summary ? { file: d.file, summary } : { file: d.file };
+          return {
+            file: d.file,
+            ...(summary && { summary }),
+            ...(typeof d.id === "string" && { id: d.id }),
+            ...((d.kind === "diff" || d.kind === "context") && { kind: d.kind }),
+            ...(isGuideLineRange(d.oldRange) && { oldRange: { start: d.oldRange.start, end: d.oldRange.end } }),
+            ...(isGuideLineRange(d.newRange) && { newRange: { start: d.newRange.start, end: d.newRange.end } }),
+          };
+
         })
     : [];
   if (title.trim().length === 0 && overview.trim().length === 0 && diffs.length === 0) return null;
@@ -465,6 +344,41 @@ export function validateGuideOutput(raw: unknown, changedFiles: string[]): { gui
     return { error: "Malformed guide output (not an object)" };
   }
   const output = raw as Record<string, unknown>;
+
+  // Model source text is deliberately stripped by sanitizeGuideSections. A host
+  // resolves context against its repository before coverage validation or display.
+  const focused = output.focused === true || (Array.isArray(output.sections) && output.sections.some((value: unknown) => {
+    if (!value || typeof value !== "object") return false;
+    const section = value as Record<string, unknown>;
+    return Array.isArray(section.diffs) && section.diffs.some((value: unknown) => {
+      if (!value || typeof value !== "object") return false;
+      const ref = value as Record<string, unknown>;
+      return ref.id !== undefined || ref.kind !== undefined || ref.oldRange !== undefined || ref.newRange !== undefined;
+    });
+  }));
+  if (focused) {
+    if (!Array.isArray(output.sections)) return { error: GUIDE_NO_SECTIONS_ERROR };
+    for (const section of output.sections) {
+      if (!section || typeof section !== "object" || !Array.isArray(section.diffs)) return { error: "Focused sections require a diffs array." };
+      for (const ref of section.diffs) {
+        if (!ref || typeof ref !== "object" || typeof ref.file !== "string" || !ref.file.trim()) return { error: "Each focused block requires a repository file path." };
+        if (typeof ref.id !== "string" || !ref.id.trim()) return { error: `Block in ${ref.file} needs a stable non-empty id.` };
+        if (ref.kind !== undefined && ref.kind !== "diff" && ref.kind !== "context") return { error: `Invalid block kind in ${ref.file}.` };
+        for (const key of ["oldRange", "newRange"]) {
+          if (ref[key] !== undefined && !isGuideLineRange(ref[key])) return { error: `${ref.file}: invalid ${key}; use inclusive positive start/end lines.` };
+        }
+        if (ref.kind === "context" && (!ref.newRange || ref.oldRange)) return { error: `Context block ${ref.id} requires newRange only.` };
+      }
+    }
+    const sections = sanitizeGuideSections(output.sections);
+    if (!sections.length) return { error: GUIDE_NO_SECTIONS_ERROR };
+    return { guide: {
+      focused: true,
+      title: typeof output.title === "string" && output.title.trim() ? output.title : "Guided review",
+      intent: typeof output.intent === "string" ? output.intent : "",
+      sections,
+    } };
+  }
 
   const changedSet = new Set(changedFiles);
   const placed = new Set<string>();

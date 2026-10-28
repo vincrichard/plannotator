@@ -100,8 +100,26 @@ export const FIXTURE_V1_WORKSPACE: GuideSnapshotV1 = {
   generator: undefined,
 };
 
+/** Focused blocks keep source coordinates and captured context in portable documents. */
+export const FIXTURE_V1_FOCUSED: GuideSnapshotV1 = {
+  ...FIXTURE_V1_LOCAL,
+  guide: {
+    title: "Auth token flow",
+    intent: "Explain validation before the returned value.",
+    focused: true,
+    sections: [{ title: "Refresh lifecycle", overview: "Validate the token, then return the refreshed value.", diffs: [
+      { id: "caller", kind: "context", file: "src/caller.ts", summary: "The entry point calls refresh.", newRange: { start: 10, end: 11 }, source: "const refreshed = refresh(token);\nreturn refreshed;" },
+      { id: "guard", file: "src/auth.ts", oldRange: { start: 2, end: 2 }, newRange: { start: 2, end: 3 }, summary: "Reject missing input." },
+      { id: "return", file: "src/auth.ts", newRange: { start: 4, end: 4 }, summary: "Return the marked token." },
+      { id: "package", file: "package.json", summary: "Bump the package version." },
+    ] }],
+    reviewed: [false],
+  },
+};
+
 export const GUIDE_SNAPSHOT_FIXTURES: ReadonlyArray<{ readonly name: string; readonly snapshot: GuideSnapshotV1 }> = [
   { name: "v1-local", snapshot: FIXTURE_V1_LOCAL },
+  { name: "v1-focused", snapshot: FIXTURE_V1_FOCUSED },
   { name: "v1-pr", snapshot: FIXTURE_V1_PR },
   { name: "v1-commit", snapshot: FIXTURE_V1_COMMIT },
   { name: "v1-workspace", snapshot: FIXTURE_V1_WORKSPACE },

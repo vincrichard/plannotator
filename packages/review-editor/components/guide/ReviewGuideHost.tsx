@@ -30,7 +30,7 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
   const state = useReviewState();
 
   const getDiffRendererProps = useCallback(
-    ({ focused }: GuideDiffRendererContext): InAppRendererProps => ({
+    ({ focused, blockId, contextOnly }: GuideDiffRendererContext): InAppRendererProps => ({
       diffStyle: state.diffStyle,
       diffOverflow: state.diffOverflow,
       diffIndicators: state.diffIndicators,
@@ -42,7 +42,7 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
       fontSize: state.fontSize,
       annotations: state.allAnnotations,
       selectedAnnotationId: state.selectedAnnotationId,
-      scrollTargetAnnotation: state.scrollTargetAnnotation,
+      scrollTargetAnnotation: focused ? state.scrollTargetAnnotation : null,
       // Only the focused card is the selection target; a shared pending
       // selection painted on every mounted card would highlight the wrong file.
       pendingSelection: focused ? state.pendingSelection : null,
@@ -55,12 +55,12 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
       onDeleteAnnotation: state.onDeleteAnnotation,
       onAddFileCommentForFile: state.onAddFileCommentForFile,
       viewedFiles: state.viewedFiles,
-      onToggleViewed: state.onToggleViewed,
-      showViewedControls: state.showViewedControls,
+      onToggleViewed: contextOnly ? undefined : state.onToggleViewed,
+      showViewedControls: blockId ? false : state.showViewedControls,
       stagedFiles: state.stagedFiles,
       onStage: state.onStage,
-      canStageFiles: state.canStageFiles,
-      showStageControls: state.showStageControls,
+      canStageFiles: contextOnly ? false : state.canStageFiles,
+      showStageControls: contextOnly ? false : state.showStageControls,
       canStagePath: state.canStagePath,
       stagingFile: state.stagingFile,
       stageError: state.stageError,

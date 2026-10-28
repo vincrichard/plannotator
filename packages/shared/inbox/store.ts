@@ -77,7 +77,9 @@ import {
   type InboxAnnotationRecord,
   type InboxAttachment,
 } from "@plannotator/core/inbox-types";
-import { isLineRangeInPatch, parseDiffToFiles, type DiffFile } from "@plannotator/core/diff-files";
+import { isLineRangeInPatch, parseDiffToFiles } from "@plannotator/core/diff-files";
+import { parseGuideSnapshotJson } from "@plannotator/core/guide-format";
+import { resolveGuideBlock } from "@plannotator/core/guide-blocks";
 import { inboxBlobPath, inboxBlobSizes, removeUnusedInboxBlobs } from "./attachments";
 import { inboxMarkupNamesOf, removeInboxMarkups } from "./markups";
 import {
@@ -278,7 +280,7 @@ export class InboxStore {
   /** The person's annotations on attachments, by id. */
   private readonly annotations = new Map<string, InboxAnnotationRecord>();
   /** A guided review's files by its snapshot's sha256 (a blob never changes). */
-  private readonly guideFileSets = new Map<string, ReadonlyMap<string, DiffFile>>();
+  private readonly guideFileSets = new Map<string, ReadonlyMap<string, { old: string; new: string }>>();
   private readonly tornFiles = new Set<string>();
   private readonly listeners = new Set<InboxListener>();
   /** How many times the store was read again from disk (a deletion): a reader's derived view is stale once it changes. */
@@ -1961,7 +1963,7 @@ export class InboxStore {
     if (!Number.isInteger(start) || !Number.isInteger(end) || (start as number) < 1 || (end as number) < (start as number)) {
       throw new InboxError("validation_error", "annotation.lineStart / lineEnd: line numbers, start first.", { field: "annotation.lineStart" });
     }
-    if (!isLineRangeInPatch(diff.patch, start as number, end as number, side)) {
+    if (!isLineRangeInPatch(diff[side], start as number, end as number, side)) {
       const range = start === end ? `line ${start}` : `lines ${start}-${end}`;
       throw new InboxError("validation_error", `annotation.lineStart / lineEnd: ${range} on the ${side} side of ${file} is not in one hunk of the guided review's patch.`, { field: "annotation.lineStart" });
     }
@@ -1997,19 +1999,29 @@ export class InboxStore {
     return record;
   }
 
-  /** A guided review's files by the paths its patch names (new and old), read from its snapshot blob once. */
-  private guideFiles(sha256: string): ReadonlyMap<string, DiffFile> {
+  /** Source anchors from the immutable review patch and verified context excerpts. */
+  private guideFiles(sha256: string): ReadonlyMap<string, { old: string; new: string }> {
     const known = this.guideFileSets.get(sha256);
     if (known) return known;
-    const files = new Map<string, DiffFile>();
+    const files = new Map<string, { old: string; new: string }>();
     try {
-      const snapshot = JSON.parse(readFileSync(inboxBlobPath(this.dir, sha256), "utf8")) as { review?: { rawPatch?: unknown } };
-      const patch = snapshot.review?.rawPatch;
-      if (typeof patch === "string") {
-        for (const file of parseDiffToFiles(patch)) {
-          files.set(file.path, file);
-          if (file.oldPath && !files.has(file.oldPath)) files.set(file.oldPath, file);
-        }
+      const parsed = parseGuideSnapshotJson(readFileSync(inboxBlobPath(this.dir, sha256), "utf8"));
+      if (!parsed.ok) throw new Error("Invalid guide snapshot");
+      const snapshot = parsed.value;
+      const patchFiles = parseDiffToFiles(snapshot.review.rawPatch);
+      for (const file of patchFiles) {
+        const patches = { old: file.patch, new: file.patch };
+        files.set(file.path, patches);
+        if (file.oldPath && !files.has(file.oldPath)) files.set(file.oldPath, patches);
+      }
+      for (const ref of snapshot.guide.sections.flatMap(section => section.diffs)) {
+        if (ref.kind !== "context") continue;
+        const resolved = resolveGuideBlock(ref, patchFiles);
+        if ("error" in resolved) continue;
+        const patches = files.get(ref.file) ?? { old: "", new: "" };
+        // Captured repository context belongs to the new side, even where the old file's lines shifted.
+        patches.new += `\n${resolved.file.patch}`;
+        files.set(ref.file, patches);
       }
     } catch {
       throw new InboxError("guide_not_found", "The guided review is missing from the store.");

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { GuideSection } from '@plannotator/core/guide';
 import type { DiffFile } from './types';
+import type { ResolvedGuideBlock } from './GuideView';
 import { renderMarkdownProse } from './renderMarkdownProse';
 import { useGuideHost } from './host';
 import { GuideFileCard } from './GuideFileCard';
@@ -25,12 +26,14 @@ function Checkbox({ checked }: { checked: boolean }) {
 function FileChip({
   filePath,
   summary,
+  location,
   file,
   active,
   onClick,
 }: {
   filePath: string;
   summary?: string;
+  location?: string;
   file: DiffFile | undefined;
   active: boolean;
   onClick: () => void;
@@ -47,7 +50,7 @@ function FileChip({
       }`}
       title={summary ? `${filePath}\n\n${summary}` : filePath}
     >
-      <span className="truncate font-mono text-[11px] font-medium text-foreground">{name}</span>
+      <span className="truncate font-mono text-[11px] font-medium text-foreground">{name}{location && <span className="ml-1 font-normal text-muted-foreground">{location}</span>}</span>
       {dir && <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/60">{dir}</span>}
       {!file ? (
         <span className="flex-shrink-0 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50">outdated</span>
@@ -64,6 +67,8 @@ function FileChip({
 interface GuideSectionCardProps {
   section: GuideSection;
   files: DiffFile[];
+  blocks?: ResolvedGuideBlock[];
+  focusedBlock?: string;
   index: number;
   total: number;
   /** False for the "Everything else" card: it is not one of the guide's sections, so it carries no "NN / NN". */
@@ -72,9 +77,9 @@ interface GuideSectionCardProps {
   showReviewed?: boolean;
   onToggleReviewed?: () => void;
   focusedFile: string | null;
-  revealTarget: { filePath: string; token: number } | null;
-  onActivate: (filePath: string) => void;
-  onRequestReveal: (filePath: string) => void;
+  revealTarget: { filePath: string; token: number; blockId?: string } | null;
+  onActivate: (filePath: string, blockId?: string) => void;
+  onRequestReveal: (filePath: string, blockId?: string) => void;
 }
 
 /**
@@ -85,6 +90,8 @@ interface GuideSectionCardProps {
 export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
   section,
   files,
+  blocks,
+  focusedBlock,
   index,
   total,
   reviewed = false,
@@ -111,7 +118,9 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
     return summaries;
   }, [section.diffs]);
 
-  const targetBelongsHere = revealTarget && section.diffs.some((ref) => ref.file === revealTarget.filePath)
+  const targetBelongsHere = revealTarget && (blocks
+    ? blocks.some(block => block.id === revealTarget.blockId)
+    : section.diffs.some((ref) => ref.file === revealTarget.filePath))
     ? revealTarget
     : null;
 
@@ -121,7 +130,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
   useEffect(() => {
     if (!targetBelongsHere) return;
     setCollapsedOverride(false);
-    onActivate(targetBelongsHere.filePath);
+    onActivate(targetBelongsHere.filePath, targetBelongsHere.blockId);
     // Token identifies the reveal event; callback identity must not replay it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetBelongsHere?.token]);
@@ -205,14 +214,15 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
 
             {section.diffs.length > 0 && (
               <div className="mt-5 space-y-1.5 md:min-h-[84px] md:overflow-y-auto md:overflow-x-hidden">
-                {section.diffs.map((ref) => (
+                {section.diffs.map((ref, refIndex) => (
                   <FileChip
-                    key={ref.file}
+                    key={ref.id ?? `${ref.file}:${refIndex}`}
                     filePath={ref.file}
                     summary={ref.summary}
-                    file={filesByPath.get(ref.file)}
-                    active={focusedFile === ref.file}
-                    onClick={() => onRequestReveal(ref.file)}
+                    location={blocks ? [ref.oldRange && `old ${ref.oldRange.start}–${ref.oldRange.end}`, ref.newRange && `${ref.newRange.start}–${ref.newRange.end}`].filter(Boolean).join(' / ') : undefined}
+                    file={blocks ? blocks.find(block => block.ref === ref)?.file : filesByPath.get(ref.file)}
+                    active={blocks ? focusedBlock === ref.id : focusedFile === ref.file}
+                    onClick={() => onRequestReveal(ref.file, blocks ? ref.id : undefined)}
                   />
                 ))}
               </div>
@@ -221,7 +231,21 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
         </div>
 
         <div className="min-w-0 space-y-4 bg-muted/[0.07] px-1.5 py-3 md:px-4 md:py-4">
-          {files.length > 0 ? (
+          {blocks ? (
+            blocks.length > 0 ? blocks.map(block => (
+              <GuideFileCard
+                key={block.id}
+                file={block.file}
+                blockId={block.id}
+                fullFile={block.fullFile}
+                contextOnly={block.ref.kind === 'context'}
+                summary={block.ref.summary}
+                focused={focusedBlock === block.id}
+                revealTarget={targetBelongsHere}
+                onActivate={onActivate}
+              />
+            )) : <p className="p-4 text-xs text-muted-foreground">No valid code blocks. See the coverage feedback above.</p>
+          ) : files.length > 0 ? (
             files.map((file) => (
               <GuideFileCard
                 key={file.path}

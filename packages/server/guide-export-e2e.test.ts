@@ -18,10 +18,11 @@ import { startReviewServer } from "./review";
 
 const SPA_HTML = "<!doctype html><html><body>SPA fallback</body></html>";
 const GUIDE_OUTPUT = {
+  focused: true,
   title: "E2E guide",
   intent: "Exported end to end.",
-  sections: [{ title: "Auth", overview: "The guard.", diffs: [{ file: "src/auth.ts", summary: "Adds a guard." }] }],
-  unplacedFiles: ["package.json"],
+  sections: [{ title: "Auth", overview: "The guard.", diffs: [{ id: "auth", file: "src/auth.ts", summary: "Adds a guard." }, { id: "package", file: "package.json", summary: "Bumps the package version." }] }],
+  unplacedFiles: [],
 };
 
 let binDir = "";
@@ -126,7 +127,7 @@ describe("guide export end to end (Bun review server)", () => {
       expect(snapshot.review.gitRef).toBe("test..HEAD");
       expect(snapshot.source.kind).toBe("local");
       expect(snapshot.guide.title).toBe("E2E guide");
-      expect(snapshot.guide.unplacedFiles).toEqual(["package.json"]);
+      expect(snapshot.guide.sections[0].diffs.map(block => block.file)).toEqual(["src/auth.ts", "package.json"]);
       expect(snapshot.generator?.engine).toBe("claude");
       expect(snapshot.generator?.customInstructions).toBe("Be brief.");
 

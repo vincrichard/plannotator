@@ -415,6 +415,7 @@ export async function startReviewServer(
 
   const tour = createTourSession();
   const guide = createGuideSession();
+  const pendingGuideUpdates = new Set<string>();
   // Durable guide persistence (#1112): autosaves validated guides to
   // ${PLANNOTATOR_DATA_DIR}/guides/{repo-key}/ and serves them back through
   // the existing guide endpoints as `saved:{id}` pseudo job ids. All getters
@@ -2230,6 +2231,43 @@ export async function startReviewServer(
             return Response.json({ ...result, ...(guideStore.isJobSaved(jobId) ? { saved: true } : {}) });
           }
 
+          // Focused guides expose exact coverage and accept revision-checked block repairs.
+          const guideBlocksMatch = url.pathname.match(/^\/api\/guide\/([^/]+)\/(coverage|blocks)$/);
+          if (guideBlocksMatch) {
+            const jobId = decodeURIComponent(guideBlocksMatch[1]);
+            if (guideBlocksMatch[2] === "coverage" && req.method === "GET") {
+              const draft = guide.getDraft(jobId);
+              return draft ? Response.json(draft) : Response.json({ error: "Focused guide draft not found" }, { status: 404 });
+            }
+            if (guideBlocksMatch[2] !== "blocks" || req.method !== "PATCH") return Response.json({ error: "Method not allowed" }, { status: 405 });
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) return Response.json({ error: "Cross-origin guide updates are not allowed" }, { status: 403 });
+            if (reviewDecided) return Response.json({ error: "This review has ended" }, { status: 409 });
+            const job = agentJobs.getJob(jobId);
+            if (!job) return Response.json({ error: "Job not found" }, { status: 404 });
+            if (!["done", "failed", "killed"].includes(job.status)) return Response.json({ error: "Wait for guide generation to finish before updating blocks" }, { status: 409 });
+            let body;
+            try {
+              const raw = await req.text();
+              if (raw.length > 1024 * 1024) return Response.json({ error: "Guide update is too large" }, { status: 413 });
+              body = JSON.parse(raw);
+              if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+            } catch { return Response.json({ error: "Invalid JSON" }, { status: 400 }); }
+            if (body.serverSession !== serverSession) return Response.json(serverSessionMismatchBody(), { status: 409 });
+            if (reviewDecided) return Response.json({ error: "This review has ended" }, { status: 409 });
+            if (pendingGuideUpdates.has(jobId)) return Response.json({ error: "Guide updates are being saved; retry shortly" }, { status: 409 });
+            pendingGuideUpdates.add(jobId);
+            try {
+              const result = guide.updateBlocks(jobId, body.revision, body.updates);
+              if ("error" in result) return Response.json({ error: result.error }, { status: result.status });
+              if (result.draft.coverage.complete) {
+                const repaired = guide.getGuide(jobId)!;
+                await guideStore.saveForJob(guideSaveJob(job), repaired, job.guideContext, guide.getLaunchReview(jobId) ?? undefined);
+                agentJobs.completeJobExternally(jobId, { correctness: "Guide Generated", explanation: "All changed lines covered by focused blocks", confidence: 1 });
+              }
+              return Response.json(result.draft);
+            } finally { pendingGuideUpdates.delete(jobId); }
+          }
+
           // API: Save guide reviewed state. Live job ids also write through to
           // the job's autosaved file; `saved:{id}` ids persist directly.
           const reviewedMatch = url.pathname.match(/^\/api\/guide\/([^/]+)\/reviewed$/);
@@ -2237,6 +2275,7 @@ export async function startReviewServer(
             const jobId = decodeURIComponent(reviewedMatch[1]);
             try {
               const body = await req.json() as { reviewed: boolean[] };
+              if (pendingGuideUpdates.has(jobId)) return Response.json({ error: "Guide updates are being saved; retry shortly" }, { status: 409 });
               if (Array.isArray(body.reviewed)) {
                 if (jobId.startsWith(SAVED_GUIDE_ID_PREFIX)) {
                   const ok = await guideStore.updateSavedReviewed(jobId.slice(SAVED_GUIDE_ID_PREFIX.length), body.reviewed);
@@ -2418,8 +2457,14 @@ export async function startReviewServer(
             if (existingJob.status !== "failed" && existingJob.status !== "killed") {
               return Response.json({ error: "This job already has a guide" }, { status: 409 });
             }
+            let updating = false;
             try {
               const body = await req.json() as { payload?: string };
+              if (reviewDecided) return Response.json({ error: "This review has ended" }, { status: 409 });
+              if (pendingGuideUpdates.has(jobId)) return Response.json({ error: "Guide updates are being saved; retry shortly" }, { status: 409 });
+              if (!["failed", "killed"].includes(agentJobs.getJob(jobId)?.status ?? "")) return Response.json({ error: "This job already has a guide" }, { status: 409 });
+              pendingGuideUpdates.add(jobId);
+              updating = true;
               const payload = typeof body.payload === "string" ? body.payload : "";
               // Fallback only — submitManualOutput prefers the job's own
               // launch-time changed-file set (guide.launchChangedFiles,
@@ -2441,7 +2486,7 @@ export async function startReviewServer(
               return Response.json({ ok: true, sections, files });
             } catch {
               return Response.json({ error: "Invalid JSON" }, { status: 400 });
-            }
+            } finally { if (updating) pendingGuideUpdates.delete(jobId); }
           }
 
           // API: Get diff content

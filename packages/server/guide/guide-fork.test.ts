@@ -7,8 +7,8 @@ import { createGuideSession } from './guide-review';
 
 const parentId = '11111111-1111-4111-8111-111111111111';
 const forkId = '22222222-2222-4222-8222-222222222222';
-const output = JSON.stringify({ title: 'Inherited intent', intent: 'Explain the snapshot', sections: [
-  { title: 'Update value', overview: 'Context from the conversation', diffs: [{ file: 'main.ts' }] },
+const output = JSON.stringify({ focused: true, title: 'Inherited intent', intent: 'Explain the snapshot', sections: [
+  { title: 'Update value', overview: 'Context from the conversation', diffs: [{ id: 'value', file: 'main.ts', oldRange: { start: 1, end: 1 }, newRange: { start: 1, end: 1 } }] },
 ], unplacedFiles: [] });
 const patch = 'diff --git a/main.ts b/main.ts\n--- a/main.ts\n+++ b/main.ts\n@@ -1 +1 @@\n-old\n+snapshot-value\n';
 const jobsUrl = new URL('http://localhost/api/agents/jobs');
@@ -16,9 +16,12 @@ const originalPath = process.env.PATH;
 const dirs: string[] = [];
 afterEach(() => { process.env.PATH = originalPath; for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture(provider: 'codex' | 'claude' | 'opencode', mode: 'success' | 'failure' | 'pending' | 'malformed' = 'success') {
+function fixture(provider: 'codex' | 'claude' | 'opencode', mode: 'success' | 'failure' | 'pending' | 'malformed' | 'partial' = 'success') {
   const cwd = mkdtempSync(join(tmpdir(), 'guide-fork-')); dirs.push(cwd);
-  const text = mode === 'malformed' ? 'broken guide JSON' : output;
+  const partial = JSON.parse(output);
+  delete partial.sections[0].diffs[0].newRange;
+  const text = mode === 'malformed' ? 'broken guide JSON' : mode === 'partial' ? JSON.stringify(partial) : output;
+  const updates = JSON.stringify({ updates: [{ sectionIndex: 0, block: { id: 'addition', file: 'main.ts', newRange: { start: 1, end: 1 } } }] });
   const parentSessionId = provider === 'opencode' ? 'ses_guideParent' : parentId;
   writeFileSync(join(cwd, provider), `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -56,11 +59,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
  const reply=result=>send({id:m.id,result});
  if(m.method==='initialize')reply({});
  if(m.method==='config/read')reply({config:{}});
- if(m.method==='thread/fork') ${mode === 'failure' ? `send({id:m.id,error:{message:'Parent session unavailable'}});` : `reply({thread:{id:'${forkId}'}});`}
+ if(m.method==='thread/fork'||m.method==='thread/resume') ${mode === 'failure' ? `send({id:m.id,error:{message:'Parent session unavailable'}});` : `reply({thread:{id:'${forkId}'}});`}
  if(m.method==='turn/start'){
    fs.writeFileSync('prompt.txt',m.params.input[0].text);
    reply({turn:{id:'t'}});
-   ${mode === 'pending' ? '' : `send({method:'item/completed',params:{item:{type:'agentMessage',phase:'final_answer',text:${JSON.stringify(text)}}}});
+   ${mode === 'pending' ? '' : `send({method:'item/completed',params:{item:{type:'agentMessage',phase:'final_answer',text:${mode === 'partial' ? `(m.params.input[0].text.includes('Coverage feedback:') ? ${JSON.stringify(updates)} : ${JSON.stringify(text)})` : JSON.stringify(text)}}}});
    send({method:'turn/completed',params:{turn:{id:'t',status:'completed'}}});`}
  }
 });`}
@@ -77,7 +80,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
       changedFilesSnapshot: ['main.ts'],
     }),
     onJobComplete: async (job, meta) => {
-      const result = await guide.onJobComplete({ job, meta, changedFiles: meta.changedFilesSnapshot! });
+      const result = await guide.onJobComplete({ job, meta, changedFiles: meta.changedFilesSnapshot!, launchReview: { rawPatch: patch, gitRef: "HEAD", source: { kind: "local", repo: "test" } } });
       if (!result.summary) { job.status = 'failed'; job.error = result.error ?? 'Invalid guide'; }
       else job.summary = result.summary;
     },
@@ -108,7 +111,7 @@ for (const provider of ['codex', 'claude', 'opencode'] as const) test(`${provide
   try {
     const id = await launch(handler);
     expect((await terminal(handler, id)).status).toBe('done');
-    expect(guide.getGuide(id)?.sections[0].diffs).toEqual([{ file: 'main.ts' }]);
+    expect(guide.getGuide(id)?.sections[0].diffs).toEqual([{ id: 'value', file: 'main.ts', oldRange: { start: 1, end: 1 }, newRange: { start: 1, end: 1 } }]);
     const prompt = readFileSync(join(cwd, 'prompt.txt'), 'utf8');
     expect(prompt).toContain(patch);
     expect(prompt).not.toContain('git diff --cached');
@@ -157,5 +160,19 @@ test('malformed fork output stays available for existing manual repair', async (
     expect(guide.getFailedPayload(id)).toBe('broken guide JSON');
     expect(guide.submitManualOutput(id, output, ['main.ts'])).toMatchObject({ ok: true });
     expect(guide.getGuide(id)).not.toBeNull();
+  } finally { handler.killAll(); }
+});
+
+
+test('incomplete fork guide repairs only missing blocks within the same read-only fork', async () => {
+  const { cwd, guide, handler } = fixture('codex', 'partial');
+  try {
+    const id = await launch(handler);
+    expect((await terminal(handler, id)).status).toBe('done');
+    expect(guide.getGuide(id)?.sections[0].diffs.map(block => block.id)).toEqual(['value', 'addition']);
+    const calls = readFileSync(join(cwd, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(calls.filter(call => call.method === 'thread/fork')).toHaveLength(1);
+    expect(calls.filter(call => call.method === 'turn/start')).toHaveLength(2);
+    expect(readFileSync(join(cwd, 'prompt.txt'), 'utf8')).toContain('uncovered added lines 1-1');
   } finally { handler.killAll(); }
 });

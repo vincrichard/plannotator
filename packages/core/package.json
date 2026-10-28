@@ -8,6 +8,7 @@
     "./diff-paths": "./diff-paths.ts",
     "./diff-files": "./diff-files.ts",
     "./guide": "./guide.ts",
+    "./guide-blocks": "./guide-blocks.ts",
     "./guide-format": "./guide-format.ts",
     "./guide-prompt": "./guide-prompt.ts",
     "./diff-type": "./diff-type.ts",

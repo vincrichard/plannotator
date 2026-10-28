@@ -195,7 +195,7 @@ export interface ReviewState {
    *  card opens and its section CodeView expands + scrolls to the virtualized
    *  file item. Cleared when the guide closes so a reopen doesn't replay the
    *  last reveal. */
-  guideRevealFile?: { path: string; token: number } | null;
+  guideRevealFile?: { path: string; token: number; lineNumber?: number; side?: 'old' | 'new' } | null;
   /** Sets guideRevealFile with a fresh token. Entry point for jumps that
    *  originate INSIDE the guide (section file chips) so they get the same
    *  expand-focus-scroll treatment as the sidebar paths above — a direct

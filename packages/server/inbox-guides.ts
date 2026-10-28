@@ -11,8 +11,8 @@
  *                    snapshot parser (`parseGuideSnapshot`) and the strict
  *                    placement checks of `buildAuthoredGuideSnapshot`
  *                    (packages/server/guide/guide-cli.ts), called, never
- *                    re-implemented: a file not in the patch, or placed twice,
- *                    is refused by name. The snapshot is stored as a blob
+ *                    re-implemented: focused guides report uncovered ranges and
+ *                    oversized blocks; legacy guides enforce file placement. The snapshot is stored as a blob
  *                    (`inbox/blobs/<sha256>`) and the message carries a
  *                    `guide` record; the window opens it in Plannotator's
  *                    guide viewer.
@@ -42,24 +42,29 @@ export const GUIDE_DIFF_STEPS =
   "In the project folder: find the base with `git merge-base <base branch> HEAD` and read the diff with `git diff <merge-base>` (it includes uncommitted edits; `git add -N <path>` first puts a new untracked file in it). Send that exact diff as `patch`. The Inbox keeps the diff as sent and never reads your working tree again.";
 
 export const GUIDE_RULES = [
-  "Every `diffs[].file` is a path from the patch, copied exactly.",
-  "A file belongs to one section: never place it twice.",
-  "Files you leave out show in a trailing \"Everything else\" chapter; list them in `unplacedFiles`.",
-  "Code diffs only: `patch` is unified diff output (`git diff`).",
-  "Instead of `guide` and `patch`, `snapshot` takes a complete Plannotator guide snapshot (`kind: \"plannotator-guided-review\"`, the JSON inside an exported guide); the same checks apply.",
+  "Use focused:true and stable unique block IDs. Explain the feature top-down, following its lifecycle and supporting steps when applicable.",
+  "Diff blocks use exact patch paths and inclusive oldRange/newRange. A file may appear in multiple blocks; each block displays at most 250 code lines.",
+  "Cover every added and deleted line, plus binary/metadata changes. Missing ranges and oversized blocks are actionable errors; repair the affected blocks instead of rewriting the guide.",
+  "Context blocks may quote other files in the same repository using kind:context and newRange. The server captures those lines; never invent source text. Context does not count toward changed-line coverage.",
+  "Code diffs only: patch is unified diff output. Supporting blocks begin expanded and can collapse; comments attach to code, not explanations.",
+  "Instead of guide and patch, snapshot takes a complete validated Plannotator guide snapshot, including its already captured context. Legacy file-based snapshots remain readable.",
 ];
 
 /**
- * The brief's worked example: the AUTHORED fixture of guide-cli.test.ts (the
- * `plannotator-guide` skill's worked example) and its two-file patch, as one
- * submit_guide call. The browser proof submits exactly this.
+ * The brief's worked example covers both changed files using focused blocks.
+ * The browser proof submits exactly this.
  */
 export const GUIDE_BRIEF_EXAMPLE = {
   body: "I wrote a guided review of the token refresh change.",
   guide: {
+    focused: true,
     title: "Token refresh",
     intent: "Refresh tokens before they expire.",
-    sections: [{ title: "The guard", overview: "Where the refresh happens.", diffs: [{ file: "src/auth.ts", summary: "Adds the refresh guard." }] }],
+    sections: [{ title: "The guard", overview: "Where the refresh happens.", diffs: [
+      { id: "refresh", kind: "diff", file: "src/auth.ts", oldRange: { start: 1, end: 1 }, newRange: { start: 1, end: 1 }, summary: "Adds the refresh guard." },
+      { id: "package", kind: "diff", file: "package.json", oldRange: { start: 1, end: 1 }, newRange: { start: 1, end: 1 }, summary: "Keeps the package metadata consistent." },
+    ] }],
+    unplacedFiles: [],
     review: { gitRef: "origin/main...HEAD", base: "origin/main" },
     generator: { engine: "claude-code", model: "claude-opus-5" },
   },
@@ -72,7 +77,7 @@ export const GET_GUIDE_BRIEF_DESCRIPTION =
   "Get what you need to write a guided review of a code change for the person: Plannotator's method, the JSON shape of the guide, how to read the diff, the rules, and a worked submit_guide call. Read the diff in your checkout, write the guide on your own model, then call submit_guide with the guide and that exact patch.";
 
 export const SUBMIT_GUIDE_DESCRIPTION =
-  "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Every file a section names must be in the patch, in one section only; a refusal names the file. Files you leave out show under \"Everything else\". `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.";
+  "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Diff blocks may repeat a file using focused ranges of at most 250 displayed code lines. All changed lines must be covered; a refusal identifies missing ranges or oversized blocks. Context can quote unchanged code elsewhere in the same repository. `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.";
 
 export type InboxGuideCheck = { ok: true; snapshot: GuideSnapshot } | { ok: false; error: string };
 
@@ -90,6 +95,9 @@ export function checkInboxGuide(input: { snapshot?: unknown; guide?: unknown; pa
     const parsed = typeof input.snapshot === "string" ? parseGuideSnapshotJson(input.snapshot) : parseGuideSnapshot(input.snapshot);
     if (!parsed.ok) return { ok: false, error: `Invalid guide snapshot (${parsed.error.path}): ${parsed.error.message}` };
     const snapshot = parsed.value;
+    // Focused snapshots already passed exact coverage and captured-context validation;
+    // re-authoring them would replace their frozen excerpts with today's checkout.
+    if (snapshot.guide.focused) return { ok: true, snapshot };
     // The strict placement checks, on the snapshot's own guide and patch. The
     // snapshot format lets a file reference omit its summary (a shipped
     // fixture does); the authored form wants a string, so an absent one is "".

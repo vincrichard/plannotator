@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GuideSection } from '@plannotator/core/guide';
+import type { ResolvedGuideBlock } from '@plannotator/guide-viewer/GuideView';
 import { GuideHostProvider, GuideSectionCard, GuideViewportProvider, renderInlineMarkdown, resolveGuideSectionFiles, type DiffFile } from '@plannotator/guide-viewer';
 import { parseDiffToFiles } from '@plannotator/guide-viewer/diffParser';
 import { GuideDiff } from './GuideReader';
@@ -27,6 +28,7 @@ const two = (n: number) => String(n + 1).padStart(2, '0');
 interface Page {
   section: GuideSection;
   files: DiffFile[];
+  blocks?: ResolvedGuideBlock[];
   /** The "Everything else" page carries no tick. */
   reviewable: boolean;
 }
@@ -60,7 +62,7 @@ export default function SurfaceGuideReader({ snapshot, reviewed, onReviewedChang
   const guide = snapshot.guide;
   const pages = useMemo<Page[]>(() => {
     const resolved = resolveGuideSectionFiles({ ...guide, reviewed: [...guide.reviewed] }, files);
-    const list: Page[] = guide.sections.map((s, i) => ({ section: s, files: resolved.sectionFiles[i] ?? [], reviewable: true }));
+    const list: Page[] = guide.sections.map((s, i) => ({ section: s, files: resolved.sectionFiles[i] ?? [], blocks: resolved.sectionBlocks?.[i], reviewable: true }));
     if (resolved.unplacedFiles.length > 0) {
       list.push({
         section: { title: 'Everything else', overview: "Changed files the guide didn't place into a section.", diffs: resolved.unplacedFiles.map((f) => ({ file: f.path })) },
@@ -75,6 +77,8 @@ export default function SurfaceGuideReader({ snapshot, reviewed, onReviewedChang
   const go = useCallback((next: number | null) => onSection(next, pages.length), [onSection, pages.length]);
   const host = useMemo(() => ({ files, DiffRenderer: GuideDiff, getDiffRendererProps: phoneRendererProps }), [files]);
   const [focusedFile, setFocusedFile] = useState<string | null>(null);
+  const [focusedBlock, setFocusedBlock] = useState<string | undefined>();
+  const activate = (path: string, id?: string) => { setFocusedFile(path); setFocusedBlock(id); };
 
   const page = section === null ? null : pages[section] ?? null;
   // A new screen starts at its top.
@@ -140,13 +144,15 @@ export default function SurfaceGuideReader({ snapshot, reviewed, onReviewedChang
           <GuideSectionCard
             section={page.section}
             files={page.files}
+            blocks={page.blocks}
+            focusedBlock={focusedBlock ?? page.blocks?.[0]?.id}
             index={section}
             total={pages.length}
             showReviewed={false}
             focusedFile={focusedFile}
             revealTarget={null}
-            onActivate={setFocusedFile}
-            onRequestReveal={setFocusedFile}
+            onActivate={activate}
+            onRequestReveal={activate}
           />
         </GuideViewportProvider>
         <nav className="sf-gnav" aria-label="Sections">

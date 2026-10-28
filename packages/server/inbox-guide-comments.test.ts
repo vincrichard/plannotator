@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { FIXTURE_V1_FOCUSED } from "@plannotator/core/guide-format-fixtures";
 import type { InboxAnnotationRecord } from "@plannotator/core/inbox-types";
 import { attachmentFeedback } from "../inbox/attachments";
 import { GUIDE_BRIEF_EXAMPLE } from "./inbox-guides";
@@ -229,4 +230,27 @@ test("Send carries the comments as the review app's export under the guided revi
   const answer = await call(client, "wait_for_reply", { thread_id: sent.thread_id, agent_session: "ses_guide", timeout_seconds: 5 });
   expect(JSON.stringify(answer)).toContain("Refresh before it expires, not after.");
   expect(JSON.stringify(answer)).toContain("src/auth.ts");
+});
+
+
+test("focused guide comments attach to captured context, including unchanged lines outside a changed file's hunks", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const snapshot = structuredClone(FIXTURE_V1_FOCUSED);
+  snapshot.guide.sections[0].diffs.push({ id: "support", file: "src/auth.ts", kind: "context", newRange: { start: 80, end: 81 }, source: "function support() {\n  return true;" });
+  const sent = await call(client, "submit_guide", { project_path: project, snapshot });
+  const route = `/api/inbox/messages/${sent.message_id}/guide/annotations`;
+  expect((await post(server, route, { annotation: comment({ id: "ann-context", filePath: "src/caller.ts", lineStart: 10, lineEnd: 11 }) })).status).toBe(200);
+  expect((await post(server, route, { annotation: comment({ id: "ann-support", lineStart: 80, lineEnd: 81 }) })).status).toBe(200);
+  const refused = [
+    { filePath: "src/caller.ts", lineStart: 9, lineEnd: 11 },
+    { filePath: "src/caller.ts", side: "old", lineStart: 10, lineEnd: 11 },
+    { lineStart: 79, lineEnd: 81 },
+    { side: "old", lineStart: 80, lineEnd: 81 },
+  ];
+  for (const fields of refused) expect((await post(server, route, { annotation: comment({ id: "ann-refused", ...fields }) })).status).toBe(422);
+  const annotations = await pending(server, sent.thread_id);
+  expect(annotations).toHaveLength(2);
+  expect(annotations[0].guide).toMatchObject({ file: "src/caller.ts", side: "new", line_start: 10, line_end: 11 });
 });

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { decompress } from "@plannotator/shared/compress";
 import { decrypt } from "@plannotator/shared/crypto";
 import { parseGuideSnapshot } from "@plannotator/shared/guide-format";
-import { FIXTURE_V1_PR } from "@plannotator/shared/guide-format-fixtures";
+import { FIXTURE_V1_PR, FIXTURE_V1_FOCUSED } from "@plannotator/shared/guide-format-fixtures";
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/shared/guide-viewer-manifest";
 import { GuideShareError, shareGuide, unshareGuide } from "./guide-share";
 
@@ -38,6 +38,14 @@ const created = (extra: Record<string, unknown> = {}) =>
   Response.json({ id: "AbCdEfGhIjKlMnOpQrStUv", url: `${SERVICE}/g/AbCdEfGhIjKlMnOpQrStUv`, deleteToken: "tok-1", ...extra }, { status: 201 });
 
 describe("shareGuide", () => {
+  test("focused guides fail before any upload until the hosted viewer supports them", async () => {
+    const svc = fakeService(() => created());
+    for (const mode of ["encrypted", "plain"] as const) {
+      await expect(shareGuide(FIXTURE_V1_FOCUSED, { serviceUrl: SERVICE, mode, viewer: GUIDE_VIEWER_MANIFEST, fetch: svc.fetch })).rejects.toThrow("Download the portable guide instead");
+    }
+    expect(svc.calls).toHaveLength(0);
+  });
+
   test("encrypted (default): posts ciphertext + viewer pin, url carries #key=, and the key decrypts back to the snapshot", async () => {
     const svc = fakeService(() => created());
     const res = await shareGuide(FIXTURE_V1_PR, { serviceUrl: SERVICE, mode: "encrypted", viewer: GUIDE_VIEWER_MANIFEST, fetch: svc.fetch });

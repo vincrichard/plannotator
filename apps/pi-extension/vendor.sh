@@ -8,7 +8,7 @@ rm -rf generated
 mkdir -p generated generated/ai/providers
 
 # Modules that MOVED to @plannotator/core — vendor the real impl from core.
-for f in feedback-templates project diff-type review-prompt guide-prompt favicon forge-refs code-file annotatable annotation-threads diagram-anchor html-anchor markdown-structure question-block text-cut server-session external-annotation agent-jobs agent-terminal source-save open-in-apps diff-paths diff-files guide guide-format guide-viewer-manifest compress crypto; do
+for f in feedback-templates project diff-type review-prompt guide-prompt favicon forge-refs code-file annotatable annotation-threads diagram-anchor html-anchor markdown-structure question-block text-cut server-session external-annotation agent-jobs agent-terminal source-save open-in-apps diff-paths diff-files guide guide-blocks guide-format guide-viewer-manifest compress crypto; do
   src="../../packages/core/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/core/%s.ts\n' "$f" | cat - "$src" > "generated/$f.ts"
 done
@@ -99,7 +99,7 @@ done
 # shared-package import rewrites as tour-review above, plus its own
 # marker-review import (guide's marker-engine support reuses marker-review.ts's
 # nonce/extraction primitives, same as review.ts does).
-for f in guide-review; do
+for f in guide-review guide-block-authoring; do
   src="../../packages/server/guide/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/server/guide/%s.ts\n' "$f" | cat - "$src" \
     | sed 's|from "\.\./vcs"|from "./review-core.ts"|' \
@@ -113,6 +113,8 @@ for f in guide-review; do
     | sed 's|from "@plannotator/shared/guide-format"|from "./guide-format.ts"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir.ts"|' \
     | sed 's|from "@plannotator/shared/guide-prompt"|from "./guide-prompt.ts"|' \
+    | sed "s|from ['\"]@plannotator/core/\\([^'\"]*\\)['\"]|from './\\1.ts'|g" \
+    | sed "s|from ['\"]@plannotator/shared/guide['\"]|from './guide.ts'|g" \
     > "generated/$f.ts"
 done
 

@@ -28,6 +28,7 @@ import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { usePierreTheme } from '../hooks/usePierreTheme';
 import { useIsWorkerPoolReadyOrDisabled, useWorkerPoolThemeSync } from '../workerPool';
 import type { DiffFile, AnnotationScrollTarget } from '../types';
+import type { FileAnnotationSelection } from '../dock/ReviewStateContext';
 import type { MarkdownFileView } from '../utils/markdownPreview';
 import { buildFileTree, getVisualFileOrder } from '../utils/buildFileTree';
 import { buildCodeNavRequest } from '../utils/buildCodeNavRequest';
@@ -194,6 +195,8 @@ export interface AllFilesCodeViewProps {
    *  patch review): the augmentation stage completes as a no-op instead of
    *  firing a /api/file-content request the server answers 400. */
   contextExpansionAvailable?: boolean;
+  /** Repository context excerpts represent current source even on the old gutter. */
+  sourceSide?: 'new';
   /**
    * Before/After image preview for a hunkless image chunk (#1598), rendered in
    * place of the binary notice. A render prop rather than a flag so the
@@ -247,6 +250,7 @@ export interface AllFilesCodeViewProps {
     conventionalLabel?: ConventionalLabel,
     decorations?: ConventionalDecoration[],
     tokenMeta?: TokenAnnotationMeta,
+    selection?: FileAnnotationSelection,
   ) => void;
   onEditAnnotation: (
     id: string,
@@ -361,7 +365,7 @@ export interface AllFilesCodeViewProps {
   // index-based onAskAI/aiHistoryForSelection (which resolve the file from the
   // single-file panel's focus) must not be used here.
   aiAvailable?: boolean;
-  onAskAIForFile?: (filePath: string, question: string) => void | Promise<boolean | void>;
+  onAskAIForFile?: (filePath: string, question: string, selection?: FileAnnotationSelection) => void | Promise<boolean | void>;
   isAILoading?: boolean;
   onViewAIResponse?: (questionId?: string) => void;
   /** Line-scoped questions rendered as inline sparkle markers. */
@@ -624,7 +628,7 @@ const noopAIMarkerClick = () => {};
 
 export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   files,
-  diffStyle,
+  diffStyle: requestedDiffStyle,
   diffOverflow,
   diffIndicators,
   lineDiffType,
@@ -640,6 +644,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   reviewBase,
   reviewSnapshotId,
   contextExpansionAvailable = true,
+  sourceSide,
   renderImagePreview,
   markdownPreview,
   compactTouchLayout,
@@ -718,6 +723,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   const workerPoolReady = useIsWorkerPoolReadyOrDisabled();
   useWorkerPoolThemeSync(pierreTheme.syntaxTheme);
   const annotations = useDiscussionAnnotations(reviewAnnotations);
+  const diffStyle = sourceSide === 'new' ? 'unified' : requestedDiffStyle;
+  const normalizeSourceRange = useCallback((range: SelectedLineRange): FileAnnotationSelection['range'] => sourceSide === 'new'
+    ? { ...range, side: 'additions', ...(range.endSide ? { endSide: 'additions' as const } : {}) }
+    : { ...range, side: range.side ?? 'additions' }, [sourceSide]);
   const discussions = useReviewDiscussions();
   const viewerRef = useRef<CodeViewHandle<DiffAnnotationMetadata> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -999,6 +1008,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   // the file first and defer until ToolbarHost remounts against its patch.
   const routeSelectionToToolbar = useCallback(
     (range: SelectedLineRange, filePath: string) => {
+      range = normalizeSourceRange(range);
       if (activeFilePath === filePath) {
         toolbarHostRef.current?.handleLineSelectionEnd(range);
       } else {
@@ -1020,7 +1030,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         onLineSelection(range);
       }
     },
-    [activeFilePath, onLineSelection, filePathToItemId],
+    [activeFilePath, onLineSelection, filePathToItemId, normalizeSourceRange],
   );
 
   // Once ToolbarHost has remounted against the newly-active file, flush the
@@ -1048,6 +1058,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       tokenMeta?: TokenAnnotationMeta,
     ) => {
       if (!activeFilePath) return;
+      const file = files.find(file => file.path === activeFilePath);
       onAddAnnotationForFile(
         activeFilePath,
         type,
@@ -1057,9 +1068,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         conventionalLabel,
         decorations,
         tokenMeta,
+        file && pendingSelection ? { file, range: normalizeSourceRange(pendingSelection) } : undefined,
       );
     },
-    [activeFilePath, onAddAnnotationForFile],
+    [activeFilePath, onAddAnnotationForFile, files, pendingSelection, normalizeSourceRange],
   );
 
   // Ask AI + AI history routed by THIS surface's active file (the file the
@@ -1068,9 +1080,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (!onAskAIForFile) return undefined;
     return (question: string) => {
       const filePath = activeFilePathRef.current;
-      if (filePath) return onAskAIForFile(filePath, question);
+      if (!filePath) return;
+      const file = files.find(file => file.path === filePath);
+      return onAskAIForFile(filePath, question,
+        file && pendingSelection ? { file, range: normalizeSourceRange(pendingSelection) } : undefined);
     };
-  }, [onAskAIForFile]);
+  }, [onAskAIForFile, files, pendingSelection, normalizeSourceRange]);
 
   const aiHistoryForActiveFile = useMemo(
     () => (getAIHistoryForFile && activeFilePath ? getAIHistoryForFile(activeFilePath) : []),
@@ -2169,6 +2184,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
 
   const handleSelectedLinesChange = useStableCallback(
     (selection: CodeViewLineSelection | null) => {
+      if (selection) selection = { ...selection, range: normalizeSourceRange(selection.range) };
       setSelectedLines(selection);
       onLineSelection(selection ? selection.range : null);
     },
@@ -2241,6 +2257,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       item: CodeViewItem<DiffAnnotationMetadata>,
     ) => {
       if (range == null || item.type !== 'diff') return;
+      range = normalizeSourceRange(range);
       // The file being edited owns its pointer interactions — opening the
       // annotation toolbar over an active editor would fight its focus.
       if (item.id === editSession.editingItemIdRef.current) return;
@@ -2284,7 +2301,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       if (!(event.metaKey || event.ctrlKey || event.altKey)) return;
       const filePath = itemIdToFilePath.get(item.id);
       if (filePath == null) return;
-      onCodeNavRequest(buildCodeNavRequest(props, filePath));
+      onCodeNavRequest(buildCodeNavRequest(sourceSide === 'new' ? { ...props, side: 'additions' } : props, filePath));
     },
   );
 
@@ -2305,7 +2322,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       // resolves it — never from an active-file side channel.
       const filePath = itemIdToFilePath.get(item.id);
       if (filePath == null) return;
-      onTokenHoverEnter(props, filePath);
+      onTokenHoverEnter(sourceSide === 'new' ? { ...props, side: 'additions' } : props, filePath);
     },
   );
 

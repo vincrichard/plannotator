@@ -71,7 +71,7 @@ type HostOverrides = {
   files?: DiffFile[];
   guideRevealFile?: { path: string; token: number } | null;
   onGuideRevealFile?: (path: string) => void;
-  allFilesActiveSearchMatch?: { id: string; filePath: string } | null;
+  allFilesActiveSearchMatch?: { id: string; filePath: string; lineNumber?: number; side?: 'addition' | 'deletion' | 'context' } | null;
   [passthrough: string]: unknown;
 };
 
@@ -473,5 +473,79 @@ describe('GuideView per-file windowing', () => {
     }
     expect(latestByFile.get('a.ts')?.isActive).toBe(true);
     expect(latestByFile.get('b.ts')?.isActive).toBe(false);
+  });
+});
+
+describe('Focused guide blocks', () => {
+  function addedFile(): DiffFile {
+    return { path: 'large.ts', status: 'added', additions: 900, deletions: 0,
+      patch: 'diff --git a/large.ts b/large.ts\nnew file mode 100644\n--- /dev/null\n+++ b/large.ts\n@@ -0,0 +1,900 @@\n'
+        + Array.from({ length: 900 }, (_, i) => `+line ${i + 1}`).join('\n') + '\n' };
+  }
+  function focusedGuide(): CodeGuideData {
+    return makeGuide({ focused: true, sections: [{ title: 'Lifecycle', overview: 'Start, execute, finish.',
+      diffs: Array.from({ length: 4 }, (_, i) => ({ id: `part-${i}`, file: 'large.ts', summary: `Part ${i + 1}`,
+        newRange: { start: i * 250 + 1, end: Math.min((i + 1) * 250, 900) } })) }], reviewed: [false] });
+  }
+
+  test('resolves repeated paths into individual source-coordinate blocks without global deduplication', () => {
+    const guide = focusedGuide();
+    guide.sections[0].diffs.push({ id: 'repeat', file: 'large.ts', summary: 'Return to entry.', newRange: { start: 1, end: 5 } });
+    const resolved = resolveGuideSectionFiles(guide, [addedFile()]);
+    expect(resolved.sectionBlocks?.[0].map(block => block.id)).toEqual(['part-0', 'part-1', 'part-2', 'part-3', 'repeat']);
+    expect(resolved.sectionFiles[0].map(file => file.path)).toEqual(Array(5).fill('large.ts'));
+    expect(resolved.sectionFiles[0][1].patch).toContain('@@ -0,0 +251,250 @@');
+    expect(resolved.sectionFiles[0][1].patch).not.toContain('+line 1\n');
+  });
+
+  test.skipIf(!hasDom)('mounts independent blocks, focuses only one, and expands only the chosen excerpt on request', async () => {
+    const guide = focusedGuide();
+    await renderView(guide, { state: makeState({ files: [addedFile()] }) });
+    expect(host!.querySelectorAll('[data-guide-block]').length).toBe(4);
+    expect(host!.textContent).toContain('Complete coverage');
+    expect(host!.textContent).toContain('900/900');
+    const first = host!.querySelector('[data-guide-block="part-0"]')!;
+    const second = host!.querySelector('[data-guide-block="part-1"]')!;
+    expect(first.textContent).toContain('Part 1');
+    expect(second.textContent).toContain('Part 2');
+    await act(async () => second.dispatchEvent(new Event('focusin', { bubbles: true })));
+    const recent = latestCodeViewProps.slice(-4);
+    expect(recent.filter(props => props.isActive)).toHaveLength(1);
+    expect(recent.every(props => props.contextExpansionAvailable === false)).toBe(true);
+    const expand = Array.from(second.querySelectorAll('button')).find(button => button.textContent === 'Show full file diff')!;
+    await act(async () => expand.click());
+    expect((latestCodeViewProps.at(-1)!.files as DiffFile[])[0].patch).toContain('+line 900');
+    expect(second.textContent).toContain('Show focused block');
+    expect(first.textContent).toContain('Show full file diff');
+  });
+
+  test.skipIf(!hasDom)('reveals the block containing a searched line rather than the first occurrence of its file', async () => {
+    const guide = focusedGuide();
+    await renderView(guide, { state: makeState({ files: [addedFile()],
+      allFilesActiveSearchMatch: { id: 'line-700', filePath: 'large.ts', lineNumber: 700, side: 'addition' },
+    }) });
+    const active = latestCodeViewProps.slice(-4).filter(props => props.isActive);
+    expect(active).toHaveLength(1);
+    expect((active[0].files as DiffFile[])[0].patch).toContain('@@ -0,0 +501,250 @@');
+    expect((active[0].files as DiffFile[])[0].patch).not.toContain('+line 1\n');
+  });
+
+  test.skipIf(!hasDom)('quotes captured repository context without adding coverage and lists missing code actionably', async () => {
+    const guide = focusedGuide();
+    guide.sections[0].diffs = [guide.sections[0].diffs[0], {
+      id: 'entry', file: 'unchanged-entry.ts', kind: 'context', summary: 'The existing entry point.',
+      newRange: { start: 42, end: 43 }, source: 'startTask();\nawait cleanup();',
+    }];
+    await renderView(guide, { state: makeState({ files: [addedFile()] }) });
+    expect(host!.textContent).toContain('Guide incomplete');
+    expect(host!.textContent).toContain('250/900');
+    expect(host!.textContent).toContain('251');
+    expect(host!.textContent).toContain('900');
+    expect(host!.textContent).toContain('Unchanged context');
+    const contextProps = latestCodeViewProps.find(props => (props.files as DiffFile[])[0]?.path === 'unchanged-entry.ts')!;
+    expect(contextProps.sourceSide).toBe('new');
+    expect(contextProps.contextExpansionAvailable).toBe(false);
+    expect((contextProps.files as DiffFile[])[0].patch).toContain('@@ -42,2 +42,2 @@');
+    expect((contextProps.files as DiffFile[])[0].patch).toContain(' startTask();');
   });
 });

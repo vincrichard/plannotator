@@ -508,7 +508,7 @@ const ReviewApp: React.FC = () => {
   // Guide-mode reveal channel (see ReviewStateContext.guideRevealFile): sidebar
   // jumps while the guide is open route here instead of mutating the hidden
   // dock. Cleared on guide close below so reopening doesn't replay the reveal.
-  const [guideRevealFile, setGuideRevealFile] = useState<{ path: string; token: number } | null>(null);
+  const [guideRevealFile, setGuideRevealFile] = useState<{ path: string; token: number; lineNumber?: number; side?: 'old' | 'new' } | null>(null);
   useEffect(() => {
     // BACKSTOP only — this effect runs AFTER a switched guide's keyed cards
     // have mounted (child effects before parent effects), so every
@@ -3681,7 +3681,7 @@ const ReviewApp: React.FC = () => {
       return;
     }
     const referencePanel = dockApi?.getPanel(REVIEW_CODE_NAV_PANEL_ID);
-    if (dockApi && annotation.filePath && (!files.some(file => file.path === annotation.filePath) ||
+    if (!guideOpen && dockApi && annotation.filePath && (!files.some(file => file.path === annotation.filePath) ||
       referencePanel?.api.getParameters().filePath === annotation.filePath)) {
       showReferences(null, id);
       setSelectedAnnotationId(id);
@@ -3697,7 +3697,7 @@ const ReviewApp: React.FC = () => {
     // selection/scroll-target below land in it.
     if (guideOpen) {
       const targetPath = annotation.filePath;
-      setGuideRevealFile(prev => ({ path: targetPath, token: (prev?.token ?? 0) + 1 }));
+      setGuideRevealFile(prev => ({ path: targetPath, token: (prev?.token ?? 0) + 1, lineNumber: annotation.lineStart, side: annotation.side }));
     } else if (!isAllFilesActiveRef.current) {
       const fileIndex = files.findIndex(f => f.path === annotation.filePath);
       if (fileIndex !== -1) handleFileSwitch(fileIndex);

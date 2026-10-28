@@ -1,4 +1,7 @@
 import { createReadOnlyFork, type ForkParent } from "../read-only-fork";
+import { parseDiffToFiles } from "@plannotator/core/diff-files";
+import { analyzeGuideCoverage, type GuideCoverage } from "@plannotator/core/guide-blocks";
+import { applyGuideBlockUpdates, captureGuideContext, hydrateGuideContext, guideBlockRepairPrompt, type GuideContextSnapshot } from "./guide-block-authoring";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
@@ -186,54 +189,13 @@ export async function buildGuideCodexCommand(options: {
  */
 export function buildGuideMarkerOutputContract(nonce: string): string {
   return `## Output contract
-Your only machine-readable output is a single marker-delimited JSON block
-matching the guide schema below. Any natural-language commentary you write
-must come BEFORE the final marker block. Emit the block exactly once, as the
-last thing in your response. The opening and closing tags carry a session id
-(after the colon) — reproduce both tags EXACTLY as shown, including that id,
-or your guide will be discarded:
-
+Return one marker-delimited JSON object matching this exact schema. Put any prose before the final block.
 ${markerOpen(nonce)}
-{
-  "title": "Add guided review for marker engines",
-  "intent": "Lets Cursor/OpenCode organize a changeset into the same chaptered review Claude/Codex produce.",
-  "sections": [
-    {
-      "title": "Guide marker contract",
-      "overview": "Explains what changed here, why it exists, and its key implications, in 2-6 sentences.",
-      "diffs": [
-        { "file": "packages/server/guide/guide-review.ts", "summary": "Adds the marker output contract so engines without a schema flag return the same guide JSON." }
-      ]
-    }
-  ],
-  "unplacedFiles": ["path/to/low-signal-file.ts"]
-}
+<JSON matching the schema below>
 ${markerClose(nonce)}
-
-Schema:
-- title: string, one line.
-- intent: string, 1-2 sentences.
-- sections: array of objects, each with
-  - title: string — concept-level chapter title, NEVER a filename paraphrase
-  - overview: string — markdown, 2-6 sentences: what changed, why it exists,
-    and its key implications. Backtick file names/symbols/config keys; bold
-    the single key clause; bullets only for 3+ parallel changes; a tiny
-    fenced code block only when code says it better than prose
-  - diffs: array of objects, each with two fields:
-    - file: string — the EXACT repo-relative path as it appears in the diff or
-      the Changed files list; never invented, abbreviated, or re-cased
-    - summary: string — 1-2 sentences on the semantic change in this file,
-      written from the diff hunks alone (no per-file investigation); what the
-      change does, not which lines it touches; never a repeat of the overview
-- unplacedFiles: array of strings, always present — changed files that don't
-  belong in any section; use an empty array when every changed file is placed
-
-Every changed file must appear in EXACTLY ONE place: either in exactly one
-section's diffs, or in unplacedFiles. Never both, never twice, never omitted.
-If no section fits a file, prefer a trailing grouped glue/wiring/config
-chapter over dumping it in unplacedFiles.`;
+${GUIDE_SCHEMA_JSON}
+Use focused blocks with stable IDs and inclusive source-line ranges. A block may show at most 250 code lines. Every added and deleted line must be covered; repeat excerpts when useful. Context blocks may quote unchanged tracked code from this repository; supply its file and newRange, never invented source text.`;
 }
-
 /**
  * Compose a marker engine's guide prompt: the guide methodology (GUIDE_REVIEW_PROMPT,
  * unchanged from the claude/codex paths, plus any reviewer extra instructions
@@ -559,7 +521,11 @@ export interface GuideSessionOnJobCompleteOptions {
   launchReview?: GuideLaunchReview;
 }
 
+export interface GuideDraft { guide: CodeGuideOutput; revision: number; coverage: GuideCoverage }
+
 export interface GuideSession {
+  getDraft(jobId: string): GuideDraft | null;
+  updateBlocks(jobId: string, revision: number, updates: unknown): { ok: true; draft: GuideDraft } | { error: string; status: number };
   guideResults: Map<string, CodeGuideOutput>;
   guideReviewed: Map<string, boolean[]>;
   /** Best-effort raw-payload capture keyed by job id, for any guide job that
@@ -693,6 +659,22 @@ export function createGuideSession(): GuideSession {
   const failedPayloads = new Map<string, string>();
   const launchChangedFiles = new Map<string, string[]>();
   const launchReviews = new Map<string, GuideLaunchReview>();
+  const contexts = new Map<string, GuideContextSnapshot | undefined>();
+  const jobContexts = new Map<string, GuideContextSnapshot | undefined>();
+  const drafts = new Map<string, GuideDraft>();
+  const focusedJobs = new Set<string>();
+
+  function validateFocused(jobId: string, output: CodeGuideOutput, patch: string, snapshot?: GuideContextSnapshot, commit = true) {
+    const hydrated = hydrateGuideContext(output, snapshot);
+    const coverage = analyzeGuideCoverage(hydrated, parseDiffToFiles(patch));
+    const draft = { guide: hydrated, revision: (drafts.get(jobId)?.revision ?? 0) + 1, coverage };
+    if (commit) drafts.set(jobId, draft);
+    return draft;
+  }
+  function rememberContext(prompt: string, snapshot?: GuideContextSnapshot) {
+    contexts.set(prompt, snapshot);
+    while (contexts.size > MAX_LAUNCH_REVIEWS) contexts.delete(contexts.keys().next().value!);
+  }
 
   return {
     guideResults,
@@ -700,21 +682,61 @@ export function createGuideSession(): GuideSession {
     failedPayloads,
     launchChangedFiles,
     launchReviews,
+    getDraft(jobId) { return drafts.get(jobId) ?? null; },
+    updateBlocks(jobId, revision, updates) {
+      const current = drafts.get(jobId);
+      if (!current) return { error: 'Focused guide draft not found', status: 404 };
+      if (current.revision !== revision) return { error: 'Guide changed; fetch its current coverage and revision before updating blocks', status: 409 };
+      try {
+        const output = applyGuideBlockUpdates(current.guide, updates);
+        const result = validateGuideOutput(output, launchChangedFiles.get(jobId) ?? []);
+        if ('error' in result) return { error: result.error, status: 400 };
+        const draft = validateFocused(jobId, result.guide, launchReviews.get(jobId)?.rawPatch ?? '', jobContexts.get(jobId), false);
+        if (guideResults.has(jobId) && !draft.coverage.complete) return { error: 'Update would make the guide incomplete: ' + draft.coverage.issues.map(issue => issue.message).join('; '), status: 422 };
+        drafts.set(jobId, draft);
+        const reviewed = [...(guideReviewed.get(jobId) ?? [])];
+        current.guide.sections.forEach((section, index) => { if (JSON.stringify(section) !== JSON.stringify(draft.guide.sections[index])) reviewed[index] = false; });
+        guideReviewed.set(jobId, reviewed);
+        if (draft.coverage.complete) { guideResults.set(jobId, draft.guide); failedPayloads.delete(jobId); }
+        else { guideResults.delete(jobId); stashFailedPayload(failedPayloads, jobId, JSON.stringify(draft.guide)); }
+        return { ok: true, draft };
+      } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid block updates', status: 400 }; }
+    },
 
     async buildCommand({ parent, cwd, patch, diffType, options, prMetadata, changedFiles, config, repair }) {
+      const contextSnapshot = options?.hasLocalAccess === false || options?.workspace ? undefined : captureGuideContext(cwd, prMetadata ? 'last-commit' : diffType);
+      const contextTag = contextSnapshot ? `\n\nRepository context snapshot: ${crypto.randomUUID()}` : "";
       if (parent) {
         // The launch snapshot remains authoritative even when the inherited conversation is older.
         const prompt = repair ? buildGuideRepairPrompt(repair.payload) :
           composeGuideMethodology(typeof config?.instructions === "string" ? config.instructions : undefined)
           + "\n\n---\n\n" + buildGuideUserMessage(patch, "static-patch", { ...options, hasLocalAccess: false },
-            prMetadata ? { ...prMetadata, inlineDiff: true } : undefined, changedFiles);
+            prMetadata ? { ...prMetadata, inlineDiff: true } : undefined, changedFiles) + contextTag;
+        rememberContext(prompt, contextSnapshot);
         return {
           command: [], cwd, prompt, engine: parent.provider, model: "", label: repair ? "Guide Repair · session fork" : "Guided Review · session fork",
           async run(signal) {
             const agent = createReadOnlyFork({ ...parent, cwd }, {
-              instructions: 'Generate a Plannotator guided review in a fork of the original conversation. Use inherited context to explain intent, but describe only the supplied review snapshot. Do not implement changes, modify files, submit feedback, or contact external services. Only your final answer is published. Return only JSON matching this schema, without Markdown fences:\n' + GUIDE_SCHEMA_JSON,
+              instructions: 'Generate a Plannotator guided review in a fork of the original conversation. Use inherited context to explain intent, but describe only the supplied review snapshot. Do not implement changes, modify files, submit feedback, or contact external services. Only your final answer is published. Return only JSON without Markdown fences. Initial guide schema:\n' + GUIDE_SCHEMA_JSON + '\nWhen asked to repair specific blocks, return only the requested updates object instead.',
             });
-            try { return (await agent.answer(prompt, signal)).text; }
+            try {
+              let text = (await agent.answer(prompt, signal)).text;
+              let output = parseGuideOutputText(text);
+              for (let attempt = 0; output?.focused && attempt < 2; attempt++) {
+                const result = validateGuideOutput(output, changedFiles?.map(file => file.path) ?? parseDiffToFiles(patch).map(file => file.path));
+                if ('error' in result) break;
+                output = hydrateGuideContext(result.guide, contextSnapshot);
+                const coverage = analyzeGuideCoverage(output, parseDiffToFiles(patch));
+                if (coverage.complete) break;
+                try {
+                  const reply = (await agent.answer(guideBlockRepairPrompt(output, coverage.issues), signal)).text;
+                  const updates = JSON.parse(reply.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim());
+                  output = applyGuideBlockUpdates(output, updates.updates);
+                  text = JSON.stringify(output);
+                } catch (error) { signal.throwIfAborted(); break; }
+              }
+              return text;
+            }
             finally { agent.dispose(); }
           },
         };
@@ -782,12 +804,14 @@ export function createGuideSession(): GuideSession {
       if (markerEngine) {
         const thinking = typeof config?.thinking === "string" && config.thinking ? config.thinking : undefined;
         const nonce = makeMarkerNonce();
-        const markerPrompt = composeGuideMarkerPrompt(userMessage, nonce, extraInstructions);
+        const markerPrompt = composeGuideMarkerPrompt(userMessage, nonce, extraInstructions) + contextTag;
+        rememberContext(markerPrompt, contextSnapshot);
         const { command } = buildMarkerCommand(markerEngine, markerPrompt, model || undefined, cwd, { thinking, cursorSandbox: resolveCursorSandbox(loadConfig()) });
         return { command, prompt: markerPrompt, cwd, label: "Guided Review", captureStdout: true, engine: markerEngine.id, model, thinking };
       }
 
-      const prompt = composeGuideMethodology(extraInstructions) + "\n\n---\n\n" + userMessage;
+      const prompt = composeGuideMethodology(extraInstructions) + "\n\n---\n\n" + userMessage + contextTag;
+      rememberContext(prompt, contextSnapshot);
 
       if (engine === "codex") {
         const outputPath = generateGuideOutputPath();
@@ -804,7 +828,11 @@ export function createGuideSession(): GuideSession {
       // parsing, so both the success and failure paths capture it. A later
       // manual repair (submitManualOutput) reuses this exact set instead of
       // whatever patch happens to be on screen at repair time.
+      const generatedHere = contexts.has(job.prompt ?? "");
+      if (generatedHere) focusedJobs.add(job.id);
       launchChangedFiles.set(job.id, changedFiles);
+      jobContexts.set(job.id, contexts.get(job.prompt ?? ""));
+      contexts.delete(job.prompt ?? "");
       if (launchReview) {
         // Same discipline for the review itself; bounded because each entry
         // carries a full patch.
@@ -814,6 +842,8 @@ export function createGuideSession(): GuideSession {
           const oldest = launchReviews.keys().next().value;
           if (oldest === undefined) break;
           launchReviews.delete(oldest);
+          jobContexts.delete(oldest);
+          drafts.delete(oldest);
         }
       }
 
@@ -875,6 +905,18 @@ export function createGuideSession(): GuideSession {
           : { summary: null, error: result.error };
       }
 
+      if (generatedHere && !result.guide.focused) {
+        stashFailedPayload(failedPayloads, job.id, rawCandidate);
+        return { summary: null, error: "Guide incomplete: return focused blocks with stable ids and source ranges; every block must display at most 250 lines." };
+      }
+      if (result.guide.focused) {
+        const draft = validateFocused(job.id, result.guide, launchReview?.rawPatch ?? '', jobContexts.get(job.id));
+        if (!draft.coverage.complete) {
+          stashFailedPayload(failedPayloads, job.id, JSON.stringify(draft.guide));
+          return { summary: null, error: 'Guide incomplete: ' + draft.coverage.issues.map(issue => issue.message).join('; ') };
+        }
+        result.guide = draft.guide;
+      }
       guideResults.set(job.id, result.guide);
       failedPayloads.delete(job.id);
 
@@ -940,6 +982,22 @@ export function createGuideSession(): GuideSession {
       const result = validateGuideOutput(parsed, changedFiles);
       if ("error" in result) return { error: result.error };
 
+      if ((focusedJobs.has(jobId) || drafts.has(jobId)) && !result.guide.focused) {
+        return { error: "Guide incomplete: use focused blocks with stable ids and source ranges; whole-file legacy output cannot replace a focused guide." };
+      }
+      if (result.guide.focused) {
+        const previous = drafts.get(jobId);
+        const draft = validateFocused(jobId, result.guide, launchReviews.get(jobId)?.rawPatch ?? '', jobContexts.get(jobId), false);
+        if (!draft.coverage.complete) {
+          if (!guideResults.has(jobId)) drafts.set(jobId, draft);
+          return { error: 'Guide incomplete: ' + draft.coverage.issues.map(issue => issue.message).join('; ') };
+        }
+        drafts.set(jobId, draft);
+        const reviewed = [...(guideReviewed.get(jobId) ?? [])];
+        previous?.guide.sections.forEach((section, index) => { if (JSON.stringify(section) !== JSON.stringify(draft.guide.sections[index])) reviewed[index] = false; });
+        guideReviewed.set(jobId, reviewed);
+        result.guide = draft.guide;
+      }
       guideResults.set(jobId, result.guide);
       failedPayloads.delete(jobId);
       const files = result.guide.sections.reduce((n, s) => n + s.diffs.length, 0);

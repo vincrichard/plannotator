@@ -56,6 +56,33 @@ Use a unique id for each thread and reuse it only when retrying the same opening
 
 The opener is published as an Agent message without running a model. The reviewer's first reply starts a read-only fork of the session that launched this review, with the opener and captured review context; later replies reuse that discussion's fork. It does not resume an arbitrary posting agent's session. Only final answers are displayed. Threads persist with the running review and appear on its other open clients. They are excluded from normal feedback until the reviewer explicitly saves a change request. POST returns 201 with \`thread\` (200 for an identical retry); stale session/snapshot or ended reviews return 409. Do not submit or approve the review yourself.
 
+## Repairing a focused guide
+
+Generate a guide only when the user explicitly requests one. For an existing guide job, find its id in GET ${origin}/api/agents/jobs, then read GET ${origin}/api/guide/<id>/coverage for the draft, revision and exact missing or oversized ranges. Read \`serverSession\` from GET ${origin}/api/diff.
+
+PATCH ${origin}/api/guide/<id>/blocks with:
+
+\`\`\`json
+{
+  "serverSession": "<serverSession from /api/diff>",
+  "revision": 1,
+  "updates": [{
+    "sectionIndex": 0,
+    "block": {
+      "id": "entry-point",
+      "file": "src/server/auth.ts",
+      "summary": "The request enters here before validation.",
+      "kind": "diff",
+      "newRange": { "start": 42, "end": 60 }
+    }
+  }]
+}
+\`\`\`
+
+Use the returned revision and zero-based section index. An existing block id replaces that block in its section; a new id appends a block. Preserve unrelated blocks and comments. Include \`oldRange\` for removed lines. Each block may display at most 250 code lines, including context; split larger changes into meaningful blocks in lifecycle order. For unchanged repository code use \`kind: "context"\` and \`newRange\`; the server captures its source from the launch snapshot, so omit \`source\`.
+
+Repeat targeted updates until \`coverage.complete\` is true. Refetch after a stale-revision 409. Repairs require a finished live job; saved-only guides cannot be repaired through this endpoint. The reviewer can click Refresh guide to see the repaired blocks. These updates never submit the review.
+
 ## Reading the diff
 
 \`\`\`sh

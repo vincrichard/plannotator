@@ -129,6 +129,7 @@ export default function GuideReader({ snapshot, reviewed, onReviewedChange, comm
   const files = useMemo(() => parseDiffToFiles(snapshot.review.rawPatch), [snapshot.review.rawPatch]);
   const guide = useMemo<CodeGuideData>(
     () => ({
+      focused: snapshot.guide.focused,
       title: snapshot.guide.title,
       intent: snapshot.guide.intent,
       sections: snapshot.guide.sections,
@@ -202,7 +203,7 @@ export default function GuideReader({ snapshot, reviewed, onReviewedChange, comm
   const revealFile = useMemo(() => {
     if (!scrollTarget) return null;
     const target = annotations.find((a) => a.id === scrollTarget.id);
-    return target ? { path: target.filePath, token: scrollTarget.token } : null;
+    return target ? { path: target.filePath, token: scrollTarget.token, lineNumber: target.lineStart, side: target.side } : null;
     // Only a new target moves the view, not an edit of the comments.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollTarget]);
@@ -214,7 +215,7 @@ export default function GuideReader({ snapshot, reviewed, onReviewedChange, comm
             comments: {
               annotations,
               selectedAnnotationId: comments.selectedId,
-              scrollTargetAnnotation: scrollTarget && annotations.some((a) => a.id === scrollTarget.id && a.filePath === file.path) ? scrollTarget : null,
+              scrollTargetAnnotation: focused && scrollTarget && annotations.some((a) => a.id === scrollTarget.id && a.filePath === file.path) ? scrollTarget : null,
               // Only the focused card is the selection target, as in the review app.
               pendingSelection: focused ? pendingSelection : null,
               onLineSelection: setPendingSelection,

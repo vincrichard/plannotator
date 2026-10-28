@@ -270,7 +270,7 @@ function ActiveGuide({
     const allRefs = guide.sections
       .flatMap((s) => s.diffs)
       .concat((guide.unplacedFiles ?? []).map((file) => ({ file })));
-    const firstResolvable = allRefs.find((ref) => filePathsInDiff.has(ref.file));
+    const firstResolvable = allRefs.find((ref) => filePathsInDiff.has(ref.file) || ('kind' in ref && ref.kind === 'context'));
     if (firstResolvable) setFocusedFile(firstResolvable.file);
   }, [guide, focusedFile, state.files]);
 
@@ -386,7 +386,12 @@ function ActiveGuide({
           focusedFile={focusedFile}
           onFocusFile={setFocusedFile}
           onRegenerate={guideLaunch.canLaunch && !regenerating ? handleRegenerate : undefined}
-          headerActions={<GuideExportButton jobId={jobId} />}
+          headerActions={<>
+            {guide.focused && <button type="button" onClick={retry}
+              className="rounded border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+              title="Reload blocks after the author updates this guide">Refresh guide</button>}
+            <GuideExportButton jobId={jobId} />
+          </>}
         />
       </ReviewGuideHost>
     </div>

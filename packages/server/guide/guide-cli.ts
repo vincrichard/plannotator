@@ -16,6 +16,9 @@
  * prints `stdout`/`stderr` and exits with `code`.
  */
 import { execFileSync } from "node:child_process";
+import { parseDiffToFiles } from "@plannotator/core/diff-files";
+import { analyzeGuideCoverage } from "@plannotator/core/guide-blocks";
+import { captureGuideContext, hydrateGuideContext } from "./guide-block-authoring";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import {
@@ -61,7 +64,9 @@ export const GUIDE_CLI_USAGE = [
   "  --id <id>          A guide Plannotator saved (see `plannotator guide list`)",
   "  --guide <file>     A guide you wrote: { title, intent, sections[{ title, overview, diffs[{ file, summary }] }],",
   "                     unplacedFiles?, review?{ gitRef, base }, source?, generator? }. Validated against --patch;",
-  "                     every file in the guide must appear in the patch. Provenance (repo, branch, head) is read",
+  "                     focused:true supports stable block ids, oldRange/newRange, kind:diff|context (250 lines max).",
+  "                     Focused guides must cover every changed line; context is captured from tracked repository files.",
+  "                     Provenance (repo, branch, head) is read",
   "                     from git in the current directory unless `source` says otherwise.",
   "  --patch <file>     The unified diff the guide describes (`git diff <base>...HEAD > guide.patch`); `-` reads stdin",
   "  --snapshot <file>  A complete portable guide snapshot document (JSON) to wrap as HTML",
@@ -214,9 +219,9 @@ export function buildAuthoredGuideSnapshot(
         const r = (ref && typeof ref === "object" ? ref : {}) as Record<string, unknown>;
         if (typeof r.file !== "string" || r.file === "") { problems.push(`sections[${i}].diffs[${j}].file must be a path from the patch.`); continue; }
         if (typeof r.summary !== "string") problems.push(`sections[${i}].diffs[${j}].summary must be a string.`);
-        if (!patchSet.has(r.file)) unknown.add(r.file);
+        if (!patchSet.has(r.file) && !(g.focused === true && r.kind === "context")) unknown.add(r.file);
         const first = seen.get(r.file);
-        if (first !== undefined) problems.push(`${r.file} is placed twice (sections[${first}] and sections[${i}]); a file belongs to one section.`);
+        if (first !== undefined && g.focused !== true) problems.push(`${r.file} is placed twice (sections[${first}] and sections[${i}]); a file belongs to one section.`);
         else seen.set(r.file, i);
       }
     });
@@ -236,11 +241,16 @@ export function buildAuthoredGuideSnapshot(
   if (problems.length > 0) return { ok: false, error: `Guide is not valid:\n- ${problems.join("\n- ")}` };
 
   const validated = validateGuideOutput(
-    { title: g.title, intent: g.intent, sections: g.sections, unplacedFiles: g.unplacedFiles },
+    { title: g.title, intent: g.intent, sections: g.sections, unplacedFiles: g.unplacedFiles, ...(g.focused === true && { focused: true }) },
     patchFiles,
   );
   if ("error" in validated) return { ok: false, error: `Guide is not valid: ${validated.error}` };
 
+  if (validated.guide.focused) {
+    validated.guide = hydrateGuideContext(validated.guide, captureGuideContext(opts.cwd));
+    const coverage = analyzeGuideCoverage(validated.guide, parseDiffToFiles(rawPatch));
+    if (!coverage.complete) return { ok: false, error: `Guide incomplete:\n- ${coverage.issues.map(issue => issue.message).join('\n- ')}` };
+  }
   const review = (g.review && typeof g.review === "object" ? g.review : {}) as Record<string, unknown>;
   const gitRef = typeof review.gitRef === "string" && review.gitRef.trim() ? review.gitRef.trim() : "HEAD";
   const base = typeof review.base === "string" && review.base.trim() ? review.base.trim() : undefined;
