@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false, addedLines = 1000, guided = false) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false, addedLines = 1000, guided: boolean | 'running' = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -67,7 +67,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     };
     mkdirSync(join(root, 'bin'));
     writeFileSync(join(root, 'guide.json'), JSON.stringify({ type: 'result', is_error: false, structured_output: guide }));
-    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ncat >/dev/null\ncat "' + join(root, 'guide.json') + '"\n', { mode: 0o700 });
+    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ncat >/dev/null\n' + (guided === 'running' ? 'while [ ! -f "' + join(root, 'complete-guide') + '" ]; do sleep 0.1; done\n' : '') + 'cat "' + join(root, 'guide.json') + '"\n', { mode: 0o700 });
   }
   const ready = join(root, 'ready.jsonl');
   const child: ChildProcess = spawn(binary, ['review', repo, '--git', '--diff-type', staged ? 'staged' : 'uncommitted', '--no-git-remote-check', '--json'], {
@@ -96,7 +96,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
       const launched = await page.request.post(new URL('/api/agents/jobs', url).href, { data: { provider: 'guide', engine: 'claude' } });
       expect(launched.ok()).toBe(true);
       const { job } = await launched.json();
-      await expect.poll(async () => {
+      if (guided !== 'running') await expect.poll(async () => {
         const { jobs } = await (await page.request.get(new URL('/api/agents/jobs', url).href)).json();
         const current = jobs.find((item: { id: string }) => item.id === job.id);
         if (current?.status === 'failed') throw new Error(current.error);
@@ -104,10 +104,11 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
       }, { timeout: 30_000 }).toBe('done');
     }
     await page.goto(url);
-    if (guided) await expect(page.getByRole('heading', { name: 'Reference navigation walkthrough', exact: true })).toBeVisible();
+    if (guided && guided !== 'running') await expect(page.getByRole('heading', { name: 'Reference navigation walkthrough', exact: true })).toBeVisible();
     else await expect(page.locator('diffs-container').first().locator('[data-line="2"]').first()).toBeVisible();
     return {
       repo, url, output: () => stdout,
+      completeGuide: () => writeFileSync(join(root, 'complete-guide'), ''),
       async close() {
         if (child.exitCode === null) child.kill('SIGTERM'); // This test's own review child.
         await expect.poll(() => child.exitCode !== null || child.signalCode !== null).toBe(true);
@@ -691,5 +692,70 @@ for (const modifier of ['Meta', 'Control'] as const) {
         afterScroll.forEach((position, index) => expect(Math.abs(position - before.scroll[index])).toBeLessThan(2));
       }
     } finally { await session.close(); }
+  });
+}
+
+for (const state of ['done', 'running'] as const) {
+  test(`mobile can leave a ${state} guided review and return`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    const guideRequests: string[] = [];
+    page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/guide/')) guideRequests.push(request.url()); });
+    const session = await review(page, false, 60, true, false, 900, state === 'running' ? 'running' : true);
+    try {
+      const openGuide = async () => {
+        await page.getByRole('button', { name: 'Options', exact: true }).click();
+        await page.getByRole('button', { name: 'Guided Review', exact: true }).click();
+      };
+      if (state === 'running') await openGuide();
+      const heading = page.getByRole('heading', { name: state === 'running' ? /your guide/ : 'Reference navigation walkthrough', exact: state !== 'running' });
+      await expect(heading).toBeVisible();
+      let blockTop = 0;
+      const block = page.locator('[data-guide-block="part-2"]');
+      if (state === 'done') {
+        await page.getByRole('button', { name: 'Collapse section' }).first().click();
+        await block.scrollIntoViewIfNeeded();
+        blockTop = await block.evaluate(el => el.getBoundingClientRect().top);
+      }
+      const back = page.getByRole('button', { name: 'Back to the diff workspace', exact: true });
+      await expect(back).toBeInViewport();
+      const size = await back.boundingBox();
+      expect(size!.width).toBeGreaterThanOrEqual(44);
+      expect(size!.height).toBeGreaterThanOrEqual(44);
+      await back.click();
+      await expect(heading).not.toBeVisible();
+      await expect(page.getByRole('button', { name: 'Open review navigation', exact: true })).toBeVisible();
+      if (state === 'running') {
+        const { jobs } = await (await page.request.get(new URL('/api/agents/jobs', session.url).href)).json();
+        expect(jobs.find((job: { provider: string }) => job.provider === 'guide').status).toMatch(/starting|running/);
+        session.completeGuide();
+        await expect.poll(async () => {
+          const { jobs: completed } = await (await page.request.get(new URL('/api/agents/jobs', session.url).href)).json();
+          return completed.find((job: { provider: string }) => job.provider === 'guide').status;
+        }).toBe('done');
+        // The completed job card proves the browser processed its SSE update.
+        await page.getByRole('button', { name: 'Options', exact: true }).click();
+        await page.getByRole('button', { name: 'Review Agents', exact: true }).click();
+        await expect(page.getByRole('button', { name: 'Open guide', exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'Close review sidebar', exact: true }).click();
+        expect(guideRequests).toHaveLength(0);
+        await expect(page.locator('[data-guide-block]')).toHaveCount(0);
+        await expect(page.getByRole('heading', { name: 'Reference navigation walkthrough', exact: true })).not.toBeVisible();
+        await expect(back).not.toBeVisible();
+      }
+      await openGuide();
+      await expect(page.getByRole('heading', { name: 'Reference navigation walkthrough', exact: true })).toBeVisible();
+      if (state === 'running') {
+        await page.getByRole('button', { name: 'Collapse section' }).first().click();
+        await block.scrollIntoViewIfNeeded();
+        blockTop = await block.evaluate(el => el.getBoundingClientRect().top);
+        await back.click();
+        await openGuide();
+      }
+      await expect(page.getByTitle('Expand', { exact: true }).filter({ hasText: 'Callers' })).toBeAttached();
+      await expect.poll(async () => Math.abs(await block.evaluate(el => el.getBoundingClientRect().top) - blockTop)).toBeLessThan(2);
+      mkdirSync(proofDir, { recursive: true });
+      await page.screenshot({ path: join(proofDir, `mobile-guide-${state}.png`) });
+    } finally { await context.close(); await session.close(); }
   });
 }

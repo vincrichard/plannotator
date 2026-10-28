@@ -56,9 +56,9 @@ Use a unique id for each thread and reuse it only when retrying the same opening
 
 The opener is published as an Agent message without running a model. The reviewer's first reply starts a read-only fork of the session that launched this review, with the opener and captured review context; later replies reuse that discussion's fork. It does not resume an arbitrary posting agent's session. Only final answers are displayed. Threads persist with the running review and appear on its other open clients. They are excluded from normal feedback until the reviewer explicitly saves a change request. POST returns 201 with \`thread\` (200 for an identical retry); stale session/snapshot or ended reviews return 409. Do not submit or approve the review yourself.
 
-## Repairing a focused guide
+## Repairing an explicitly requested focused guide
 
-Generate a guide only when the user explicitly requests one. For an existing guide job, find its id in GET ${origin}/api/agents/jobs, then read GET ${origin}/api/guide/<id>/coverage for the draft, revision and exact missing or oversized ranges. Read \`serverSession\` from GET ${origin}/api/diff.
+Ordinary review comments require no guide generation or coverage repair. Use this section only for a guide the user explicitly requested for this review or an ongoing workflow; a previous guide alone does not authorize another. For that existing guide job, find its id in GET ${origin}/api/agents/jobs, then read GET ${origin}/api/guide/<id>/coverage for the draft, revision and exact missing or oversized ranges. Read \`serverSession\` from GET ${origin}/api/diff.
 
 PATCH ${origin}/api/guide/<id>/blocks with:
 

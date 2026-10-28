@@ -126,7 +126,7 @@ import { useAgentJobs, jobMatchesReviewContext } from '@plannotator/ui/hooks/use
 import { exportEditorAnnotations } from '@plannotator/ui/utils/parser';
 import { buildReviewAgentInstructions } from '@plannotator/ui/utils/reviewAgentInstructions';
 import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
-import { FolderTree } from 'lucide-react';
+import { ArrowLeft, FolderTree } from 'lucide-react';
 import { DockviewReact, type DockviewReadyEvent, type DockviewApi } from 'dockview-react';
 import {
   ReviewHeaderMenu,
@@ -505,7 +505,6 @@ const ReviewApp: React.FC = () => {
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideVisited, setGuideVisited] = useState(false);
   const closeGuide = useCallback(() => setGuideOpen(false), []);
-  useEffect(() => { if (guideOpen) setGuideVisited(true); }, [guideOpen]);
   // Latest completed `guide` job id (or DEMO_GUIDE_ID in standalone/demo mode).
   const [activeGuideJobId, setActiveGuideJobId] = useState<string | null>(null);
   // Guide-mode reveal channel (see ReviewStateContext.guideRevealFile): sidebar
@@ -1804,6 +1803,13 @@ const ReviewApp: React.FC = () => {
     [prMetadata, activeWorktreePath],
   );
 
+  useEffect(() => {
+    if (guideOpen && (activeGuideJobId || agentJobs.jobs.some(job =>
+      job.provider === 'guide' && job.status === 'done' && jobMatchesCurrentContext(job)))) {
+      setGuideVisited(true);
+    }
+  }, [guideOpen, activeGuideJobId, agentJobs.jobs, jobMatchesCurrentContext]);
+
   // A `saved:{id}` guide has no AgentJobInfo, so GuideScreen's context match
   // passes trivially (unknown ids are tolerated by design, for the demo path).
   // Without this, switching PR or worktree while a saved guide is open would
@@ -1838,6 +1844,18 @@ const ReviewApp: React.FC = () => {
   // "not yet seen" and opens the guide takeover immediately. That matches
   // tour's existing behavior; kept consistent rather than special-cased here.
   const guideAutoOpenRef = useRef(new Set<string>());
+  const guideWasOpenRef = useRef(guideOpen);
+  useEffect(() => {
+    // Leaving a pending guide opts out of its completion takeover, not its job.
+    if (guideWasOpenRef.current && !guideOpen) {
+      for (const job of agentJobs.jobs) {
+        if (job.provider === 'guide' && jobMatchesCurrentContext(job)) {
+          guideAutoOpenRef.current.add(job.id);
+        }
+      }
+    }
+    guideWasOpenRef.current = guideOpen;
+  }, [guideOpen, agentJobs.jobs, jobMatchesCurrentContext]);
   useEffect(() => {
     for (const job of agentJobs.jobs) {
       if (job.provider !== 'guide' || job.status !== 'done' || guideAutoOpenRef.current.has(job.id)) {
@@ -4827,7 +4845,19 @@ const ReviewApp: React.FC = () => {
             ? 'contents'
             : 'min-w-0 flex flex-1 items-center gap-2 lg:gap-3'
           }>
-            {shouldShowFileTree && (
+            {isCompactTouchLayout && guideVisible ? (
+              <button
+                type="button"
+                data-pn-touch-target
+                data-pn-touch-target-icon
+                onClick={closeGuide}
+                className="h-11 w-11 flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+                title="Back to the diff workspace"
+                aria-label="Back to the diff workspace"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            ) : shouldShowFileTree && (
               <>
                 <button
                   data-pn-touch-target={isCompactTouchLayout || undefined}
@@ -4847,7 +4877,7 @@ const ReviewApp: React.FC = () => {
                 <div className="w-px h-5 bg-border/50 mx-1 hidden lg:block" />
               </>
             )}
-            {isCompactTouchLayout && !shouldShowFileTree && <span aria-hidden />}
+            {isCompactTouchLayout && !guideVisible && !shouldShowFileTree && <span aria-hidden />}
             {!isCompactTouchLayout && aiUIEnabled && hasSearchableFiles && (
               <>
                 <button

@@ -19,6 +19,8 @@ Use the CLI only when you have no such tool, or for what the tool does not do: `
 
 ## Choose the command
 
+**Ordinary code review means a regular diff review.** Generate or regenerate a Guided Review only when the user explicitly requests it for this review or an ongoing workflow. A prior guide or a large diff is not an instruction to create one; ordinary review links are ready without guide generation.
+
 | The user wants | Run (CLI, when you have no `plannotator` tool) |
 | --- | --- |
 | Review a plan you produced | Nothing. Plan review opens automatically on plan exit via hooks. Never run bare `plannotator` yourself. |
