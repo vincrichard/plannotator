@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false, addedLines = 1000) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods = false, addedLines = 1000, guided = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -50,13 +50,32 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     writeFileSync(join(repo, 'helper.ts'), '// working tree only\nexport function widget(value: number) {\n  return value * 99;\n}\n');
     writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const workingOnly = widget(99);\n");
   }
+  if (guided) {
+    const guide = {
+      focused: true, title: 'Reference navigation walkthrough', intent: 'Follow the calls to their implementation.',
+      sections: [
+        { title: 'Callers', overview: 'Existing call sites.', diffs: ['a-main.ts', 'b-other.ts', 'c-distant.ts'].map(file => ({
+          id: file, kind: 'diff', file, oldRange: { start: 1, end: file === 'c-distant.ts' ? 3 : 2 }, newRange: { start: 1, end: file === 'a-main.ts' ? 2 : 3 },
+        })) },
+        { title: 'New calls', overview: 'Read each part of the added file.', diffs: [0, 1, 2, 3].map(i => ({
+          id: `part-${i}`, kind: 'diff', file: 'd-added.ts', newRange: { start: i * 250 + 1, end: Math.min((i + 1) * 250, addedLines) },
+        })) },
+        { title: 'Implementation', overview: 'The unchanged implementation.', diffs: [{
+          id: 'implementation', kind: 'context', file: 'helper.ts', newRange: { start: 1, end: 3 },
+        }] },
+      ],
+    };
+    mkdirSync(join(root, 'bin'));
+    writeFileSync(join(root, 'guide.json'), JSON.stringify({ type: 'result', is_error: false, structured_output: guide }));
+    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ncat >/dev/null\ncat "' + join(root, 'guide.json') + '"\n', { mode: 0o700 });
+  }
   const ready = join(root, 'ready.jsonl');
   const child: ChildProcess = spawn(binary, ['review', repo, '--git', '--diff-type', staged ? 'staged' : 'uncommitted', '--no-git-remote-check', '--json'], {
     env: {
-      PATH: process.env.PATH,
+      PATH: guided ? `${join(root, 'bin')}:${process.env.PATH}` : process.env.PATH,
       PLANNOTATOR_DATA_DIR: join(root, 'data'), PLANNOTATOR_READY_FILE: ready,
       PLANNOTATOR_SKIP_BROWSER_OPEN: '1', PLANNOTATOR_REMOTE: '0', PLANNOTATOR_PORT: '0',
-      PLANNOTATOR_AI: 'disabled', PLANNOTATOR_SHARE: 'disabled', PLANNOTATOR_UPDATE_CHECK: '0',
+      PLANNOTATOR_AI: guided ? undefined : 'disabled', PLANNOTATOR_SHARE: 'disabled', PLANNOTATOR_UPDATE_CHECK: '0',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -73,8 +92,20 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
       ['plannotator-announce-tui-herdr-seen', '1'], ['plannotator-announce-ask-session-seen', '1'],
       ['plannotator-announce-agent-tool-seen', '1'],
     ].map(([name, value]) => ({ name, value, url })));
+    if (guided) {
+      const launched = await page.request.post(new URL('/api/agents/jobs', url).href, { data: { provider: 'guide', engine: 'claude' } });
+      expect(launched.ok()).toBe(true);
+      const { job } = await launched.json();
+      await expect.poll(async () => {
+        const { jobs } = await (await page.request.get(new URL('/api/agents/jobs', url).href)).json();
+        const current = jobs.find((item: { id: string }) => item.id === job.id);
+        if (current?.status === 'failed') throw new Error(current.error);
+        return current?.status;
+      }, { timeout: 30_000 }).toBe('done');
+    }
     await page.goto(url);
-    await expect(page.locator('diffs-container').first().locator('[data-line="2"]').first()).toBeVisible();
+    if (guided) await expect(page.getByRole('heading', { name: 'Reference navigation walkthrough', exact: true })).toBeVisible();
+    else await expect(page.locator('diffs-container').first().locator('[data-line="2"]').first()).toBeVisible();
     return {
       repo, url, output: () => stdout,
       async close() {
@@ -599,3 +630,66 @@ test('proxy polling keeps nested reference hover and near-top scroll stable', as
     expect(Math.max(...offsets)).toBe(120);
   } finally { await page.close(); await session.close(); }
 });
+
+for (const modifier of ['Meta', 'Control'] as const) {
+  test(`guided ${modifier}-click opens references and returns to the same reading position`, async ({ page }) => {
+    // Catches the hidden-dock navigation bug and the guide remount that erased
+    // a reader's collapsed sections and both levels of scroll position.
+    const session = await review(page, false, 60, true, false, 900, true);
+    try {
+      await page.getByRole('button', { name: 'Collapse section' }).first().click();
+      const collapsed = page.getByTitle('Expand', { exact: true }).filter({ hasText: 'Callers' });
+      await expect(collapsed).toBeVisible();
+      for (const [id, line, side] of [['part-0', 240, 'additions'], ['implementation', 1, 'unified']] as const) {
+        const block = page.locator(`[data-guide-block="${id}"]`);
+        await block.scrollIntoViewIfNeeded();
+        if (id === 'part-0') await block.locator('diffs-container').evaluate(element => {
+          let viewport = element.parentElement;
+          while (viewport && !(viewport.scrollHeight > viewport.clientHeight && getComputedStyle(viewport).overflowY === 'auto')) viewport = viewport.parentElement;
+          if (!viewport) throw new Error('Missing guide code scroll viewport');
+          viewport.scrollTop = viewport.scrollHeight;
+          viewport.dispatchEvent(new Event('scroll'));
+        });
+        const token = block.locator(`[data-${side}] [data-line="${line}"] [data-char]`).filter({ hasText: /^widget$/ });
+        await token.scrollIntoViewIfNeeded();
+        await expect(token).toBeInViewport();
+        await token.hover();
+        // Let pointer activation and the virtualized header finish measuring.
+        await token.evaluate(async () => {
+          for (let frame = 0; frame < 5; frame++) await new Promise(requestAnimationFrame);
+        });
+        const before = await token.evaluate(el => {
+          const scroll: number[] = [];
+          for (let parent: Element | null = el; parent; parent = parent.parentElement ?? (parent.getRootNode() instanceof ShadowRoot ? (parent.getRootNode() as ShadowRoot).host : null)) {
+            if (parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(getComputedStyle(parent).overflowY)) scroll.push(parent.scrollTop);
+          }
+          return { top: el.getBoundingClientRect().top, scroll };
+        });
+        expect(before.scroll.some(position => position > 100)).toBe(true);
+        await token.click({ modifiers: [modifier] });
+        const locations = page.getByLabel('Symbol locations');
+        await expect(locations.getByRole('heading', { name: 'Definitions', exact: true })).toBeVisible();
+        await expect(locations.getByRole('heading', { name: 'References', exact: true })).toBeVisible();
+        const definitionView = page.locator('[data-reference-file="helper.ts"]');
+        await expect(definitionView).toBeVisible();
+        await expect(definitionView.locator('[data-line="1"]')).toBeInViewport();
+        await expect(definitionView.locator('[data-line="1"]')).toContainText('export function widget');
+        // The retained hidden guide must not handle the normal workspace's shortcut.
+        await page.keyboard.press('x');
+        await page.getByTitle('Open guided review', { exact: true }).click();
+        await expect(collapsed).toBeAttached();
+        await expect(token).toBeInViewport();
+        await expect.poll(async () => Math.abs(await token.evaluate(el => el.getBoundingClientRect().top) - before.top)).toBeLessThan(2);
+        const afterScroll = await token.evaluate(el => {
+          const scroll: number[] = [];
+          for (let parent: Element | null = el; parent; parent = parent.parentElement ?? (parent.getRootNode() instanceof ShadowRoot ? (parent.getRootNode() as ShadowRoot).host : null)) {
+            if (parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(getComputedStyle(parent).overflowY)) scroll.push(parent.scrollTop);
+          }
+          return scroll;
+        });
+        expect(afterScroll).toHaveLength(before.scroll.length);
+        afterScroll.forEach((position, index) => expect(Math.abs(position - before.scroll[index])).toBeLessThan(2));
+      }
+    } finally { await session.close(); }
+  });
+}

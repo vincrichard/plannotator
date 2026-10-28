@@ -16,6 +16,7 @@ import { ReviewGuideHost } from './ReviewGuideHost';
 import { GuideExportButton } from './GuideExportButton';
 
 interface GuideScreenProps {
+  active: boolean;
   /** Latest completed guide job id (or the demo guide id in standalone mode).
    *  Null when no guide has completed yet. */
   activeGuideJobId: string | null;
@@ -46,6 +47,7 @@ interface GuideScreenProps {
  *   3. otherwise, the empty/launch state.
  */
 export const GuideScreen: React.FC<GuideScreenProps> = ({
+  active,
   activeGuideJobId,
   jobs,
   capabilities,
@@ -155,6 +157,7 @@ export const GuideScreen: React.FC<GuideScreenProps> = ({
     return (
       <ActiveGuide
         key={displayGuideJobId}
+        active={active}
         jobId={displayGuideJobId}
         jobs={jobs}
         failedJob={newerFailedJob}
@@ -200,6 +203,7 @@ export const GuideScreen: React.FC<GuideScreenProps> = ({
 };
 
 function ActiveGuide({
+  active,
   jobId,
   jobs,
   failedJob,
@@ -208,6 +212,7 @@ function ActiveGuide({
   onOpenFixedGuide,
   onOpenSavedGuide,
 }: {
+  active: boolean;
   jobId: string;
   jobs: AgentJobInfo[];
   /** A LATER guide job (different id, newer than `jobId`) that failed or was
@@ -377,7 +382,7 @@ function ActiveGuide({
   return (
     <div className="w-full">
       {failureStrip}
-      <ReviewGuideHost>
+      <ReviewGuideHost active={active}>
         <GuideView
           guide={guide}
           reviewed={reviewed}

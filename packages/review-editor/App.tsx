@@ -503,6 +503,9 @@ const ReviewApp: React.FC = () => {
   // Guided Review screen takeover — file tree + center dock hidden (dock stays
   // mounted, just CSS-hidden; see the dock wrapper below), right sidebar untouched.
   const [guideOpen, setGuideOpen] = useState(false);
+  const [guideVisited, setGuideVisited] = useState(false);
+  const closeGuide = useCallback(() => setGuideOpen(false), []);
+  useEffect(() => { if (guideOpen) setGuideVisited(true); }, [guideOpen]);
   // Latest completed `guide` job id (or DEMO_GUIDE_ID in standalone/demo mode).
   const [activeGuideJobId, setActiveGuideJobId] = useState<string | null>(null);
   // Guide-mode reveal channel (see ReviewStateContext.guideRevealFile): sidebar
@@ -1296,6 +1299,7 @@ const ReviewApp: React.FC = () => {
     localCheckoutAvailable: !!(gitContext || agentCwd),
     closeTokenHover,
     guideOpen,
+    onShowReferences: closeGuide,
     sourcePanelId: isCallFlowActive ? REVIEW_CALL_FLOW_PANEL_ID
       : isSemanticDiffActive ? REVIEW_SEMANTIC_DIFF_PANEL_ID
       : isAllFilesActive ? REVIEW_ALL_FILES_PANEL_ID : REVIEW_DIFF_PANEL_ID,
@@ -5565,20 +5569,22 @@ const ReviewApp: React.FC = () => {
           {/* Guide takeover — peer of the file tree / center dock, not a
               replacement for either in the tree: the dock below stays
               mounted (just CSS-hidden) so its layout/scroll state survives
-              toggling the guide open and closed. */}
-          {guideVisible && (
+              toggling the guide open and closed. The visited guide also stays
+              mounted so reference detours preserve its position and blocks. */}
+          {aiUIEnabled && (guideVisible || guideVisited) && (
             <div
-              className="flex-1 min-w-0 overflow-y-auto"
-              inert={isCompactTransientSurfaceOpen || undefined}
-              aria-hidden={isCompactTransientSurfaceOpen || undefined}
+              className={`flex-1 min-w-0 overflow-y-auto ${guideVisible ? '' : 'hidden'}`}
+              inert={!guideVisible || isCompactTransientSurfaceOpen || undefined}
+              aria-hidden={!guideVisible || isCompactTransientSurfaceOpen || undefined}
             >
               <GuideScreen
+                active={guideVisible}
                 activeGuideJobId={activeGuideJobId}
                 jobs={agentJobs.jobs}
                 capabilities={agentJobs.capabilities}
                 launchJob={agentJobs.launchJob}
                 killJob={agentJobs.killJob}
-                onClose={() => setGuideOpen(false)}
+                onClose={closeGuide}
                 onOpenFixedGuide={handleOpenGuide}
                 onOpenSavedGuide={handleOpenGuide}
               />

@@ -13,17 +13,19 @@ interface Options {
   localCheckoutAvailable: boolean;
   guideOpen: boolean;
   closeTokenHover(): void;
+  onShowReferences(): void;
 }
 
 /** Owns the References dock lifecycle; lookup and visit history stay in useCodeNav. */
 export function useReferencePanel({
-  dockApi, snapshotId, sourcePanelId, localCheckoutAvailable, guideOpen, closeTokenHover,
+  dockApi, snapshotId, sourcePanelId, localCheckoutAvailable, guideOpen, closeTokenHover, onShowReferences,
 }: Options) {
   const codeNav = useCodeNav(snapshotId);
   const origin = useRef<{ panelId: string; width?: number } | null>(null);
 
   const showReferences = useCallback((symbol: string | null, annotationId?: string) => {
     if (!dockApi) return;
+    onShowReferences();
     const existing = dockApi.getPanel(REVIEW_CODE_NAV_PANEL_ID);
     if (existing) {
       existing.api.updateParameters({ annotationId });
@@ -43,7 +45,7 @@ export function useReferencePanel({
         initialWidth: origin.current?.width ?? Math.round(dockApi.width * 0.7),
       });
     }
-  }, [dockApi, sourcePanelId]);
+  }, [dockApi, sourcePanelId, onShowReferences]);
 
   const handleCodeNavRequest = useCallback((request: CodeNavRequest) => {
     // Cancel pending hover dwell as well as its card before opening References.

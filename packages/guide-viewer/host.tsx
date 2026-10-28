@@ -59,6 +59,8 @@ export interface GuideDiffRendererContext {
 }
 
 export interface GuideHostValue<P extends object = Record<string, unknown>> {
+  /** Hidden in-app guides retain state without taking keyboard/search focus. */
+  active?: boolean;
   /** Every file of the review the guide describes. Guide refs resolve against this list. */
   files: DiffFile[];
   /** Renders one file's diff. */

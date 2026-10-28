@@ -26,7 +26,7 @@ type InAppRendererProps = Omit<
   | 'allowScrollChaining'
 >;
 
-export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactNode }> = ({ active, children }) => {
   const state = useReviewState();
 
   const getDiffRendererProps = useCallback(
@@ -42,10 +42,10 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
       fontSize: state.fontSize,
       annotations: state.allAnnotations,
       selectedAnnotationId: state.selectedAnnotationId,
-      scrollTargetAnnotation: focused ? state.scrollTargetAnnotation : null,
+      scrollTargetAnnotation: active && focused ? state.scrollTargetAnnotation : null,
       // Only the focused card is the selection target; a shared pending
       // selection painted on every mounted card would highlight the wrong file.
-      pendingSelection: focused ? state.pendingSelection : null,
+      pendingSelection: active && focused ? state.pendingSelection : null,
       reviewBase: state.reviewBase,
       reviewSnapshotId: state.feedbackDiffContext?.snapshotId,
       onLineSelection: state.onLineSelection,
@@ -69,7 +69,7 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
       searchQuery: state.isSearchPending ? '' : state.debouncedSearchQuery,
       searchMatches: state.searchMatches,
       activeSearchMatchId: state.activeSearchMatchId,
-      activeSearchMatch: state.allFilesActiveSearchMatch,
+      activeSearchMatch: active ? state.allFilesActiveSearchMatch : null,
       onCodeNavRequest: state.onCodeNavRequest,
       aiAvailable: state.aiAvailable,
       onAskAIForFile: state.onAskAIForFile,
@@ -79,19 +79,20 @@ export const ReviewGuideHost: React.FC<{ children: React.ReactNode }> = ({ child
       onClickAIMarker: state.onClickAIMarker,
       getAIHistoryForFile: state.getAIHistoryForFile,
     }),
-    [state],
+    [state, active],
   );
 
   const value = useMemo<GuideHostValue<InAppRendererProps>>(
     () => ({
+      active,
       files: state.files,
       DiffRenderer: AllFilesCodeView,
       getDiffRendererProps,
       revealFile: state.guideRevealFile,
       onRevealFile: state.onGuideRevealFile,
-      activeSearchMatch: state.allFilesActiveSearchMatch,
+      activeSearchMatch: active ? state.allFilesActiveSearchMatch : null,
     }),
-    [state.files, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch],
+    [active, state.files, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch],
   );
 
   return <GuideHostProvider value={value}>{children}</GuideHostProvider>;

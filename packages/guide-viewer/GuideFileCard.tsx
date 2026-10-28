@@ -35,7 +35,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   revealTarget,
   onActivate,
 }) => {
-  const { DiffRenderer, getDiffRendererProps } = useGuideHost();
+  const { DiffRenderer, getDiffRendererProps, active = true } = useGuideHost();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const scrollPositionRef = useRef(0);
   const [collapsed, setCollapsed] = useState(false);
@@ -127,7 +127,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
             onFileCollapsedChange={(filePath, nextCollapsed) => {
               if (filePath === file.path) setCollapsed(nextCollapsed);
             }}
-            isActive={focused}
+            isActive={active && focused}
             allowScrollChaining
           />
         ) : (
