@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,8 @@ const patch = 'diff --git a/main.ts b/main.ts\n--- a/main.ts\n+++ b/main.ts\n@@ 
 const jobsUrl = new URL('http://localhost/api/agents/jobs');
 const originalPath = process.env.PATH;
 const dirs: string[] = [];
-afterEach(() => { process.env.PATH = originalPath; for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const servers: ReturnType<typeof Bun.serve>[] = [];
+afterEach(() => { for (const server of servers.splice(0)) server.stop(true); process.env.PATH = originalPath; for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 function fixture(provider: 'codex' | 'claude' | 'opencode', mode: 'success' | 'failure' | 'pending' | 'malformed' | 'partial' = 'success') {
   const cwd = mkdtempSync(join(tmpdir(), 'guide-fork-')); dirs.push(cwd);
@@ -28,9 +30,10 @@ const fs = require('node:fs');
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 fs.appendFileSync('argv.jsonl', JSON.stringify(process.argv.slice(2))+'\\n');
 ${provider === 'opencode' ? `
+if (process.argv[4] === '/api/info') { process.stdout.write('{}'); process.exit(0); }
+if (process.argv[2] === 'debug') { process.stdout.write(process.cwd()); process.exit(0); }
 const [, method, route] = process.argv.slice(2);
-const bodyIndex = process.argv.indexOf('--data');
-const body = bodyIndex < 0 ? {} : JSON.parse(process.argv[bodyIndex + 1]);
+const body = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
 if (route.endsWith('/fork')) {
  ${mode === 'failure' ? `console.error('Parent session unavailable'); process.exit(1);` : ''}
  fs.rmSync('prompt.txt', {force:true});
@@ -68,6 +71,18 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
  }
 });`}
 `, { mode: 0o700 });
+  if (provider === 'opencode') {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
+      if (req.headers.get('authorization') !== `Basic ${Buffer.from('opencode:test').toString('base64')}`) return new Response(null, { status: 401 });
+      const url = new URL(req.url);
+      const result = spawnSync(Bun.which('node')!, [join(cwd, provider), 'api', req.method.toLowerCase(), url.pathname + url.search], {
+        cwd, input: await req.text(), encoding: 'utf8',
+      });
+      return new Response(result.status === 0 ? result.stdout : result.stderr, { status: result.status === 0 ? 200 : 404 });
+    } });
+    servers.push(server);
+    writeFileSync(join(cwd, 'service.json'), JSON.stringify({ url: `http://127.0.0.1:${server.port}`, password: 'test' }));
+  }
   // All other provider discovery stays off PATH; the fake CLI still needs node.
   writeFileSync(join(cwd, 'node'), `#!/bin/sh\nexec '${Bun.which('node')}' "$@"\n`, { mode: 0o700 });
   process.env.PATH = cwd;
@@ -135,7 +150,7 @@ for (const provider of ['codex', 'opencode'] as const) test(`${provider}: unavai
   const { handler, guide } = fixture(provider, 'failure');
   try {
     const id = await launch(handler);
-    expect((await terminal(handler, id)).error).toContain('Parent session unavailable');
+    expect((await terminal(handler, id)).error).toContain(provider === 'opencode' ? 'HTTP 404' : 'Parent session unavailable');
     expect(guide.getGuide(id)).toBeNull();
   } finally { handler.killAll(); }
 });
