@@ -759,3 +759,31 @@ for (const state of ['done', 'running'] as const) {
     } finally { await context.close(); await session.close(); }
   });
 }
+
+
+test('guided questions carry only the current chapter and selected code context', async ({ page }) => {
+  let submitted: Record<string, any> | undefined;
+  await page.route('**/api/review-discussions', async route => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON();
+      await route.fulfill({ status: 201, json: { thread: {} } });
+    } else await route.fulfill({ json: { supported: true, available: true, version: 1, threads: [] } });
+  });
+  const session = await review(page, false, 60, true, false, 1000, true);
+  try {
+    const block = page.locator('[data-guide-block="a-main.ts"]');
+    await block.scrollIntoViewIfNeeded();
+    await selectLine(page, block.locator('diffs-container'), 2, 'additions');
+    await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+    await page.getByPlaceholder('Ask about this code...').fill('Why is this caller changing?');
+    await page.getByRole('button', { name: 'Ask', exact: true }).click();
+    await expect.poll(() => submitted?.text).toBe('Why is this caller changing?');
+    expect(submitted?.anchor).toMatchObject({ filePath: 'a-main.ts', lineStart: 2, lineEnd: 2, side: 'new' });
+    expect(submitted?.guideContext).toContain('Reference navigation walkthrough');
+    expect(submitted?.guideContext).toContain('Callers');
+    expect(submitted?.guideContext).toContain('Existing call sites.');
+    expect(submitted?.guideContext).not.toContain('Read each part of the added file.');
+    expect(submitted?.codeContext).toContain('- 2 | +export const main = widget(10);');
+    expect(JSON.stringify(submitted).length).toBeLessThan(4000);
+  } finally { await session.close(); }
+});

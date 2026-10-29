@@ -30,7 +30,7 @@ export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactN
   const state = useReviewState();
 
   const getDiffRendererProps = useCallback(
-    ({ focused, blockId, contextOnly }: GuideDiffRendererContext): InAppRendererProps => ({
+    ({ focused, blockId, contextOnly, guideContext }: GuideDiffRendererContext): InAppRendererProps => ({
       diffStyle: state.diffStyle,
       diffOverflow: state.diffOverflow,
       diffIndicators: state.diffIndicators,
@@ -72,7 +72,7 @@ export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactN
       activeSearchMatch: active ? state.allFilesActiveSearchMatch : null,
       onCodeNavRequest: state.onCodeNavRequest,
       aiAvailable: state.aiAvailable,
-      onAskAIForFile: state.onAskAIForFile,
+      onAskAIForFile: (filePath, question, selection) => state.onAskAIForFile(filePath, question, selection ? { ...selection, guideContext } : undefined),
       isAILoading: state.isAILoading,
       onViewAIResponse: state.onViewAIResponse,
       aiMessages: state.aiMessages,

@@ -10,6 +10,7 @@ interface CreateQuestion {
   anchor: ReviewDiscussionAnchor;
   text: string;
   codeContext?: string;
+  guideContext?: string;
 }
 const disconnectedMessage = 'Cannot reach this review. Unsent questions are kept in this tab. Check the connection or download saved questions before reopening.';
 const endedMessage = 'This review has ended. Your question was not sent. Keep this tab open to copy unsent text, or download saved questions before starting another review.';
@@ -104,10 +105,10 @@ export function useReviewDiscussionState(snapshotId?: string, logicalReviewId?: 
     try { await refresh(); } catch { /* The mutation succeeded; polling will recover its snapshot. */ }
     return result;
   }, [refresh, markEnded]);
-  const create = useCallback(async (anchor: ReviewDiscussionAnchor, text: string, codeContext?: string, retry?: CreateQuestion) => {
+  const create = useCallback(async (anchor: ReviewDiscussionAnchor, text: string, codeContext?: string, guideContext?: string, retry?: CreateQuestion) => {
     const question = retry ?? Object.values(failedQuestions).find(previous =>
-      previous.snapshotId === snapshotId && previous.text === text && previous.codeContext === codeContext
-      && JSON.stringify(previous.anchor) === JSON.stringify(anchor)) ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext };
+      previous.snapshotId === snapshotId && previous.text === text && previous.codeContext === codeContext && previous.guideContext === guideContext
+      && JSON.stringify(previous.anchor) === JSON.stringify(anchor)) ?? { id: crypto.randomUUID(), snapshotId, anchor, text, codeContext, guideContext };
     saveFailedQuestions(previous => ({ ...previous, [question.id]: question }));
     try {
       await request('', 'POST', question);

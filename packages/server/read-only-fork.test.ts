@@ -7,8 +7,7 @@ const instructions = 'Inspect this task without changing files.';
 const parentId = '11111111-1111-4111-8111-111111111111';
 const forkId = '22222222-2222-4222-8222-222222222222';
 const dirs: string[] = [];
-const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => { for (const server of servers.splice(0)) server.stop(true); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fake(body: string) {
   const cwd = mkdtempSync(join(tmpdir(), 'discussion-agent-')); dirs.push(cwd);
   const executablePath = join(cwd, 'agent');
@@ -208,61 +207,46 @@ const readPermissions = [
   ...['read', 'glob', 'grep'].map(action => ({ action, resource: '*', effect: 'allow' })),
 ];
 function fakeOpenCode(mode = 'success') {
-  const fixture = fake(`
-if (process.argv.slice(2).join(' ') === 'api get /api/info') { process.stdout.write('{}'); process.exit(0); }
-if (process.argv.slice(2).join(' ') !== 'debug paths state') process.exit(2);
-process.stdout.write(process.cwd());
+  return fake(`
+const fs = require('node:fs');
+const [api, method, path, flag, body] = process.argv.slice(2);
+const input = body ? JSON.parse(body) : undefined;
+fs.appendFileSync('calls.jsonl',JSON.stringify({api,method,path,input})+'\\n');
+const emit = value => process.stdout.write(JSON.stringify(value));
+const mode = ${JSON.stringify(mode)};
+const child = '${opencodeChild}', parent = '${opencodeParent}';
+if (path.endsWith('/fork')) {
+  if (mode === 'unavailable') { console.error('Parent session unavailable'); process.exit(1); }
+  if (mode === 'startup-timeout') { fs.writeFileSync('started',''); setInterval(()=>{},1000); }
+  else emit({data:{id:mode === 'same-parent' ? parent : child,parentID:'ses_ancestor',fork:{sessionID:mode === 'wrong-parent' ? 'ses_other' : parent}}});
+} else if (method === 'patch') {
+  fs.writeFileSync('permissions.json', JSON.stringify(input.permissions));
+} else if (path === '/api/session/'+child && method === 'get') {
+  emit({data:{id:child,parentID:'ses_ancestor',fork:{sessionID:parent},permissions:mode === 'unsafe-permissions' ? [] : JSON.parse(fs.readFileSync('permissions.json','utf8'))}});
+} else if (path.endsWith('/prompt')) {
+  const count = fs.existsSync('question') ? Number(fs.readFileSync('question','utf8'))+1 : 1;
+  fs.writeFileSync('question', String(count));
+  const acknowledge = () => emit({data:{id:'msg_question'+count,sessionID:child}});
+  if (mode === 'delayed-admission') {
+    const timer = setInterval(() => { if (!fs.existsSync('acknowledge')) return; clearInterval(timer); acknowledge(); }, 10);
+  } else acknowledge();
+} else if (path.endsWith('/interrupt')) {
+  emit({data:{interrupted:true}});
+} else if (path.includes('/message?')) {
+  const count = fs.existsSync('question') ? Number(fs.readFileSync('question','utf8')) : 0;
+  const answer = {id:'msg_answer'+count,type:'assistant',time:{completed:1},finish:'stop',content:[
+    {type:'reasoning',text:'PRIVATE THOUGHT'}, {type:'text',text:'Final answer '+count}]};
+  const question = {id:'msg_question'+count,type:'user'};
+  if (count && mode === 'poll-failure') { console.error('Transport disconnected'); process.exit(1); }
+  if (!count) emit({data:[{id:'msg_inherited',type:'assistant',content:[{type:'text',text:'Inherited answer'}]}],cursor:{}});
+  else if (mode === 'pending' && !fs.existsSync('finish')) emit({data:[{...answer,finish:undefined,time:{},content:[{type:'reasoning',text:'PRIVATE THOUGHT'}]},question],cursor:{}});
+  else if (mode === 'failure') emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'failed',error:{message:'Provider unavailable'}},answer,question],cursor:{}});
+  else if (mode === 'foreign-question') emit({data:[{id:'msg_intruder',type:'user'},answer,question],cursor:{}});
+  else if (mode === 'pagination' && !path.includes('cursor=')) emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'succeeded'},answer],cursor:{next:'older page'}});
+  else if (mode === 'pagination') emit({data:[question],cursor:{}});
+  else emit({data:[{id:'msg_idle'+count,type:'idle',outcome:'succeeded'},answer,question],cursor:{}});
+} else { console.error('Unexpected command: '+JSON.stringify(process.argv));process.exit(2); }
 `);
-  const file = (name: string) => join(fixture.cwd, name);
-  const emit = (data: unknown) => Response.json(data);
-  const child = opencodeChild, parent = opencodeParent;
-  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
-    if (req.headers.get('authorization') !== `Basic ${Buffer.from('opencode:fixture-secret').toString('base64')}`) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-    const url = new URL(req.url), path = url.pathname + url.search, method = req.method.toLowerCase();
-    const input = method === 'get' ? undefined : await req.json();
-    writeFileSync(file('calls.jsonl'), JSON.stringify({ api: 'api', method, path, input }) + '\n', { flag: 'a' });
-    if (path.endsWith('/fork')) {
-      if (mode === 'unavailable') return new Response('Parent session unavailable', { status: 404 });
-      if (mode === 'startup-timeout') { writeFileSync(file('started'), ''); return new Promise<Response>(() => {}); }
-      return emit({ data: { id: mode === 'same-parent' ? parent : child, parentID: 'ses_ancestor', fork: { sessionID: mode === 'wrong-parent' ? 'ses_other' : parent } } });
-    }
-    if (method === 'patch') {
-      writeFileSync(file('permissions.json'), JSON.stringify(input.permissions));
-      return new Response(null, { status: 204 });
-    }
-    if (path === '/api/session/' + child && method === 'get') {
-      return emit({ data: { id: child, parentID: 'ses_ancestor', fork: { sessionID: parent }, permissions: mode === 'unsafe-permissions' ? [] : JSON.parse(readFileSync(file('permissions.json'), 'utf8')) } });
-    }
-    if (path.endsWith('/prompt')) {
-      const count = existsSync(file('question')) ? Number(readFileSync(file('question'), 'utf8')) + 1 : 1;
-      writeFileSync(file('question'), String(count));
-      if (mode === 'delayed-admission') {
-        while (!existsSync(file('acknowledge'))) await Bun.sleep(10);
-      }
-      return emit({ data: { id: 'msg_question' + count, sessionID: child } });
-    }
-    if (path.endsWith('/interrupt')) return emit({ data: { interrupted: true } });
-    if (path.includes('/message?')) {
-      const count = existsSync(file('question')) ? Number(readFileSync(file('question'), 'utf8')) : 0;
-      const answer = { id: 'msg_answer' + count, type: 'assistant', time: { completed: 1 }, finish: 'stop', content: [
-        { type: 'reasoning', text: 'PRIVATE THOUGHT' }, { type: 'text', text: 'Final answer ' + count }] };
-      const question = { id: 'msg_question' + count, type: 'user' };
-      if (count && mode === 'poll-failure') return new Response('Transport disconnected', { status: 503 });
-      if (!count) return emit({ data: [{ id: 'msg_inherited', type: 'assistant', content: [{ type: 'text', text: 'Inherited answer' }] }], cursor: {} });
-      if (mode === 'pending' && !existsSync(file('finish'))) return emit({ data: [{ ...answer, finish: undefined, time: {}, content: [{ type: 'reasoning', text: 'PRIVATE THOUGHT' }] }, question], cursor: {} });
-      if (mode === 'failure') return emit({ data: [{ id: 'msg_idle' + count, type: 'idle', outcome: 'failed', error: { message: 'Provider unavailable' } }, answer, question], cursor: {} });
-      if (mode === 'foreign-question') return emit({ data: [{ id: 'msg_intruder', type: 'user' }, answer, question], cursor: {} });
-      if (mode === 'pagination' && !path.includes('cursor=')) return emit({ data: [{ id: 'msg_idle' + count, type: 'idle', outcome: 'succeeded' }, answer], cursor: { next: 'older page' } });
-      if (mode === 'pagination') return emit({ data: [question], cursor: {} });
-      return emit({ data: [{ id: 'msg_idle' + count, type: 'idle', outcome: 'succeeded' }, answer, question], cursor: {} });
-    }
-    return new Response('Unexpected request', { status: 400 });
-  } });
-  servers.push(server);
-  writeFileSync(file('service.json'), JSON.stringify({ url: `http://127.0.0.1:${server.port}`, password: 'fixture-secret' }));
-  return fixture;
 }
 function openCodeCalls(cwd: string): { api: string; method: string; path: string; input?: Record<string, unknown> }[] {
   return readFileSync(join(cwd, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -289,24 +273,12 @@ test('OpenCode locks a native fork before prompting, resumes it and returns only
   } finally { agent.dispose(); }
 });
 
-test('OpenCode sends large review context without command-line argument limits', async () => {
+test('OpenCode reports an oversized Unicode request before trying to spawn it', async () => {
   const fixture = fakeOpenCode();
   const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
-  const prompt = 'Review this diff\n' + 'const value = "日本語";\n'.repeat(12_000);
   try {
-    expect((await agent.answer(prompt, new AbortController().signal)).text).toBe('Final answer 1');
-    expect(openCodeCalls(fixture.cwd).find(call => call.path.endsWith('/prompt'))?.input?.text)
-      .toBe(`${instructions}\n\n${prompt}`);
-  } finally { agent.dispose(); }
-});
-
-test('OpenCode refuses credentials for a non-loopback service before any API request', async () => {
-  const fixture = fakeOpenCode();
-  writeFileSync(join(fixture.cwd, 'service.json'), JSON.stringify({ url: 'https://example.invalid', password: 'fixture-secret' }));
-  const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
-  try {
-    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow('loopback');
-    expect(existsSync(join(fixture.cwd, 'calls.jsonl'))).toBe(false);
+    await expect(agent.answer('日本語'.repeat(20_000), new AbortController().signal)).rejects.toThrow('Select fewer lines');
+    expect(openCodeCalls(fixture.cwd).some(call => call.path.endsWith('/prompt'))).toBe(false);
   } finally { agent.dispose(); }
 });
 
@@ -372,7 +344,7 @@ for (const mode of ['failure', 'foreign-question', 'poll-failure']) test(`OpenCo
   const fixture = fakeOpenCode(mode);
   const agent = createReadOnlyFork({ provider: 'opencode', sessionId: opencodeParent, cwd: fixture.cwd }, fixture);
   try {
-    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow(mode === 'failure' ? 'Provider unavailable' : mode === 'poll-failure' ? 'HTTP 503' : 'another question');
+    await expect(agent.answer('why?', new AbortController().signal)).rejects.toThrow(mode === 'failure' ? 'Provider unavailable' : mode === 'poll-failure' ? 'Transport disconnected' : 'another question');
     expect(openCodeCalls(fixture.cwd).filter(call => call.path.endsWith('/interrupt')).map(call => call.path))
       .toEqual([`/api/session/${opencodeChild}/interrupt`]);
   } finally { agent.dispose(); }

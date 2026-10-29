@@ -1,3 +1,4 @@
+import { limitDiscussionContext } from '@plannotator/core/review-discussion-context';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DiffFile } from './types';
 import { useGuideHost } from './host';
@@ -10,6 +11,7 @@ function estimateDiffHeight(patch: string): number {
 }
 
 interface GuideFileCardProps {
+  guideContext?: string;
   file: DiffFile;
   blockId?: string;
   fullFile?: DiffFile;
@@ -27,6 +29,7 @@ interface GuideFileCardProps {
  */
 export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   file,
+  guideContext,
   blockId,
   fullFile,
   contextOnly,
@@ -113,7 +116,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
       >
         {mounted ? (
           <DiffRenderer
-            {...getDiffRendererProps({ file: shownFile, focused, blockId, contextOnly })}
+            {...getDiffRendererProps({ file: shownFile, focused, blockId, contextOnly, guideContext: `${guideContext ?? ''}${summary ? `\nBlock: ${limitDiscussionContext(summary, 800)}` : ''}` })}
             files={fileList}
             sourceSide={contextOnly ? 'new' : undefined}
             {...(blockId ? { contextExpansionAvailable: false } : {})}

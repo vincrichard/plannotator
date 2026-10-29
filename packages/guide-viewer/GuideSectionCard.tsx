@@ -1,3 +1,4 @@
+import { limitDiscussionContext } from '@plannotator/core/review-discussion-context';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { GuideSection } from '@plannotator/core/guide';
@@ -65,6 +66,7 @@ function FileChip({
 }
 
 interface GuideSectionCardProps {
+  guideContext?: string;
   section: GuideSection;
   files: DiffFile[];
   blocks?: ResolvedGuideBlock[];
@@ -89,6 +91,7 @@ interface GuideSectionCardProps {
  */
 export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
   section,
+  guideContext,
   files,
   blocks,
   focusedBlock,
@@ -234,6 +237,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
           {blocks ? (
             blocks.length > 0 ? blocks.map(block => (
               <GuideFileCard
+                guideContext={`${guideContext ?? ''}\nSection: ${limitDiscussionContext(section.title, 200)}\n${limitDiscussionContext(section.overview ?? '', 1_200)}`}
                 key={block.id}
                 file={block.file}
                 blockId={block.id}
@@ -248,6 +252,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
           ) : files.length > 0 ? (
             files.map((file) => (
               <GuideFileCard
+                guideContext={`${guideContext ?? ''}\nSection: ${limitDiscussionContext(section.title, 200)}\n${limitDiscussionContext(section.overview ?? '', 1_200)}`}
                 key={file.path}
                 file={file}
                 summary={summaryByPath.get(file.path)}

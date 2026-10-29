@@ -25,6 +25,7 @@ export interface LineAnnotationComposeRequest {
 
 /** A selection owned by a secondary viewer, independent of the main diff's focus. */
 export interface FileAnnotationSelection {
+  guideContext?: string;
   file: DiffFile;
   range: SelectedLineRange;
 }

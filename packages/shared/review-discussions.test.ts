@@ -1,21 +1,21 @@
 import { afterEach, describe, expect, test, setSystemTime } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createReviewDiscussions } from './review-discussions';
 
 const roots: string[] = [];
 afterEach(() => { setSystemTime(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function setup() {
+function setup(provider: 'codex' | 'claude' | 'opencode' = 'codex') {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussion-test-'));
   roots.push(root);
   let snapshotId = 'review-one';
   let decided = false;
   const calls: { prompt: string; signal: AbortSignal; complete(text: string): void; activity(): void; sessionId?: string }[] = [];
   const options = {
-    file: join(root, 'threads.json'), serverSession: 'review-session', provider: 'codex' as const,
+    file: join(root, 'threads.json'), serverSession: 'review-session', provider,
     getSnapshotId: () => snapshotId,
-    getContext: () => ({ snapshotId, patch: '@@ -1 +1 @@\n-old\n+new', description: 'fixture repo', cwd: root }),
+    getContext: () => ({ snapshotId, patch: 'diff --git a/other.ts b/other.ts\n--- a/other.ts\n+++ b/other.ts\n@@ -12,3 +12 @@\n-removed code\n-old next\n-old last\n+new', cwd: root }),
     isDecided: () => decided,
     createAgent: ({ sessionId, onSessionId }: { sessionId?: string; onSessionId(id: string): void }) => ({
       answer: (prompt: string, signal: AbortSignal, onActivity?: () => void) => new Promise<{ sessionId: string; text: string }>(resolve => {
@@ -36,6 +36,38 @@ function setup() {
 const settle = async () => { await new Promise(resolve => setTimeout(resolve, 0)); };
 
 describe('review discussions', () => {
+  for (const provider of ['codex', 'claude', 'opencode'] as const) test(`${provider} receives selected lines and guide context without the repository diff`, async () => {
+    const f = setup(provider);
+    const original = f.options.getContext();
+    f.options.getContext = () => ({ ...original, patch: original.patch + '\ndiff --git a/huge.ts b/huge.ts\n--- a/huge.ts\n+++ b/huge.ts\n@@ -0,0 +1,10000 @@\n' + '+UNRELATED_CONTEXT\n'.repeat(10000) });
+    await f.request('POST', '', { ...f.question, guideContext: 'Guide: lifecycle\nSection: Shutdown\nBlock: Close the worker' });
+    const prompt = f.calls[0].prompt;
+    expect(prompt).toContain('other.ts:12-14 (old)');
+    expect(prompt).toContain('12 - | -removed code');
+    expect(prompt).toContain('- 12 | +new');
+    expect(prompt).toContain('Why remove this?');
+    expect(prompt).toContain('Section: Shutdown');
+    expect(prompt).not.toContain('UNRELATED_CONTEXT');
+    expect(prompt).not.toContain('huge.ts');
+    expect(Buffer.byteLength(JSON.stringify({ text: prompt }))).toBeLessThan(2000);
+    f.store.dispose();
+  });
+
+  test('retrying a stored legacy question drops its whole patch but keeps the captured selection', async () => {
+    const f = setup();
+    await f.request('POST', '', f.question);
+    f.store.dispose();
+    const saved = JSON.parse(readFileSync(f.options.file, 'utf8'));
+    saved.threads[0].context = 'Snapshot: review-one\nSelected code from the review:\nremoved code\nReviewed patch (truncated):\n' + 'UNRELATED_CONTEXT'.repeat(15000);
+    writeFileSync(f.options.file, JSON.stringify(saved));
+    const restored = createReviewDiscussions(f.options);
+    await restored.handle(new Request('http://localhost/api/review-discussions/question-1/messages', { method: 'POST', body: JSON.stringify({ serverSession: 'review-session', id: 'retry', text: 'Try again' }) }));
+    expect(f.calls[1].prompt).toContain('removed code');
+    expect(f.calls[1].prompt).toContain('Snapshot: review-one');
+    expect(f.calls[1].prompt).not.toContain('UNRELATED_CONTEXT');
+    restored.dispose();
+  });
+
   test('agent openers persist without running a model; the first reply supplies the opener and captured review to a new fork', async () => {
     const f = setup();
     const opening = { ...f.question, role: 'assistant', text: 'This removal loses the retry guard.' };
@@ -57,7 +89,7 @@ describe('review discussions', () => {
     expect(f.calls[0].sessionId).toBeUndefined();
     expect(f.calls[0].prompt).toContain(opening.text);
     expect(f.calls[0].prompt).toContain('removed code');
-    expect(f.calls[0].prompt).toContain('@@ -1 +1 @@\n-old\n+new');
+    expect(f.calls[0].prompt).toContain('12 - | -removed code');
     expect(f.calls[0].prompt).toContain('Snapshot: review-one');
     expect(f.calls[0].prompt).toContain('Can you explain the risk?');
     f.calls[0].complete('The retry guard handled transient failures.'); await settle();

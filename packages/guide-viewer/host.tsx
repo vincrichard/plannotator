@@ -51,6 +51,7 @@ export interface GuideDiffRendererProps {
 }
 
 export interface GuideDiffRendererContext {
+  guideContext?: string;
   file: DiffFile;
   focused: boolean;
   /** Stable block identity, separate from source coordinates shared by comments. */

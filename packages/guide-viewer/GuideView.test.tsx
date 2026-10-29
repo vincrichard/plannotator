@@ -161,6 +161,22 @@ describe('resolveGuideSectionFiles', () => {
 });
 
 describe('GuideView persistence affordances (#1112)', () => {
+  test.skipIf(!hasDom)('question context identifies the current guide chapter and block without other chapters', async () => {
+    const contexts = new Map<string, string>();
+    const state = makeState({ files: [makeFile('a.ts'), makeFile('b.ts')] });
+    state.getDiffRendererProps = ({ file, guideContext }) => { contexts.set(file.path, guideContext ?? ''); return {}; };
+    await renderView(makeGuide({ sections: [
+      { title: 'Shutdown', overview: 'Close the worker.', diffs: [{ file: 'a.ts', summary: 'Release its socket.' }] },
+      { title: 'Unrelated chapter', overview: 'Must stay out of the first question.', diffs: [{ file: 'b.ts' }] },
+    ] }), { state });
+    expect(contexts.get('a.ts')).toContain('Persisted guide');
+    expect(contexts.get('a.ts')).toContain('Test intent.');
+    expect(contexts.get('a.ts')).toContain('Shutdown');
+    expect(contexts.get('a.ts')).toContain('Close the worker.');
+    expect(contexts.get('a.ts')).toContain('Release its socket.');
+    expect(contexts.get('a.ts')).not.toContain('Unrelated chapter');
+  });
+
   test.skipIf(!hasDom)('renders the Saved chip only when persisted, and no outdated hint either way', async () => {
     await renderView(makeGuide());
     expect(host!.textContent).not.toContain('Saved');

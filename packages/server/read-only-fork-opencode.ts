@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -20,43 +18,25 @@ function object(value: unknown): JsonObject {
 /** Native OpenCode 2 API; owns its fork, never the shared server or parent execution. */
 export async function opencodeAnswer(parent: ForkParent, sessionId: string | undefined, prompt: string, signal: AbortSignal,
   remember: (id: unknown) => string, executable = 'opencode', onActivity?: () => void): Promise<string> {
-  signal.throwIfAborted();
-  // Discover the same local service as the CLI, but send context in HTTP bodies: argv has OS size limits.
-  const connectionSignal = AbortSignal.any([signal, AbortSignal.timeout(STARTUP_TIMEOUT_MS)]);
-  await exec(executable, ['api', 'get', '/api/info'], { cwd: parent.cwd, signal: connectionSignal });
-  const { stdout: statePath } = await exec(executable, ['debug', 'paths', 'state'], { cwd: parent.cwd, signal: connectionSignal });
-  const service = object(JSON.parse(await readFile(join(statePath.trim(), 'service.json'), { encoding: 'utf8', signal: connectionSignal })));
-  if (typeof service.url !== 'string' || typeof service.password !== 'string' || !service.password) {
-    throw new Error('OpenCode local service connection is unavailable');
-  }
-  const origin = new URL(service.url);
-  if (origin.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(origin.hostname)
-    || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
-    throw new Error('OpenCode local service must use a loopback HTTP address');
-  }
-  const authorization = `Basic ${Buffer.from(`opencode:${service.password}`).toString('base64')}`;
   const api = async (method: string, path: string, body?: object, requestSignal: AbortSignal | null = signal): Promise<JsonObject> => {
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(new Error('OpenCode API request timed out after 2 minutes')), STARTUP_TIMEOUT_MS);
     const combined = requestSignal ? AbortSignal.any([requestSignal, timeout.signal]) : timeout.signal;
     try {
-      const response = await fetch(new URL(path, origin), {
-        method: method.toUpperCase(), signal: combined, redirect: 'error',
-        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => null);
-        throw new Error(typeof error?.message === 'string' ? error.message : `HTTP ${response.status} ${response.statusText}`);
+      if (body && Buffer.byteLength(JSON.stringify(body), 'utf8') > 96 * 1024) {
+        throw new Error('Question or context is too large for the OpenCode CLI. Select fewer lines or shorten the request.');
       }
-      const text = await response.text();
-      if (!text.trim()) return {};
-      const result = object(JSON.parse(text));
+      const { stdout } = await exec(executable, ['api', method, path, ...(body ? ['--data', JSON.stringify(body)] : [])], {
+        cwd: parent.cwd, signal: combined, maxBuffer: 4 * 1024 * 1024,
+      });
+      if (!stdout.trim()) return {};
+      const result = object(JSON.parse(stdout));
       if (typeof result._tag === 'string') throw new Error(typeof result.message === 'string' ? result.message : result._tag);
       return result;
     } catch (error) {
       combined.throwIfAborted();
-      throw new Error(`OpenCode request failed: ${error instanceof Error ? error.message : String(error)}`);
+      const stderr = (error as { stderr?: string }).stderr?.trim();
+      throw new Error(`OpenCode request failed: ${stderr || (error instanceof Error ? error.message : String(error))}`);
     } finally { clearTimeout(timer); }
   };
   const checkFork = (data: JsonObject) => {

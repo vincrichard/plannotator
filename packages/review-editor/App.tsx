@@ -1,3 +1,4 @@
+import { selectedDiffContext } from '../core/review-discussion-context';
 import { useComposerDraftState } from '@plannotator/ui/hooks/useComposerDraftState';
 // Eager renderer registration (side-effect imports, evaluated before every
 // other module below). These keep Plannotator's first paint and identity
@@ -1771,7 +1772,7 @@ const ReviewApp: React.FC = () => {
 
     if (discussions.supported) {
       const { id: _id, type: _type, createdAt: _createdAt, ...anchor } = withPRContext({ id: '', type: 'comment', createdAt: 0, filePath, lineStart, lineEnd, side, scope: 'line' }, file);
-      return discussions.create(anchor, question, selectedCode || undefined);
+      return discussions.create(anchor, question, selectedDiffContext(file.patch, anchor) || selectedCode || undefined, selection?.guideContext);
     }
 
     askAI({

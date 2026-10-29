@@ -104,7 +104,7 @@ export function ReviewDiscussionsTab({ onNavigate }: { onNavigate?: (file: strin
     <p className="text-xs text-muted-foreground">Ask agent on selected code. Answers appear here while you keep reviewing. Change requests are sent with final feedback.</p>
     {!discussions.available && <p role="status" className="text-xs">{discussions.reason ?? 'Agent discussions are unavailable for this review.'}</p>}
     {discussions.error && <p role="alert" className="text-xs text-destructive">{discussions.error}</p>}
-    {Object.values(discussions.failedQuestions).map(question => <div key={question.id} className="text-xs"><p>{question.text}</p><button className="review-toolbar-btn" onClick={() => void discussions.create(question.anchor, question.text, question.codeContext, question)}>Retry question</button></div>)}
+    {Object.values(discussions.failedQuestions).map(question => <div key={question.id} className="text-xs"><p>{question.text}</p><button className="review-toolbar-btn" onClick={() => void discussions.create(question.anchor, question.text, question.codeContext, question.guideContext, question)}>Retry question</button></div>)}
     <label className="block text-xs">Ask about this review<textarea aria-label="Ask about this review" className="mt-1 w-full p-2 bg-muted rounded text-xs" value={generalDraft} onChange={event => discussions.setDraft('general', event.target.value)} /></label>
     <button className="review-toolbar-btn primary" disabled={sending || !discussions.available || !generalDraft.trim()} onClick={() => void sendGeneral()}>Ask agent</button>
     <label className="text-xs flex gap-2"><input type="checkbox" checked={showResolved} onChange={event => setShowResolved(event.target.checked)} />Show resolved</label>

@@ -49,7 +49,8 @@
     ".": "./index.ts",
     "./guide-format-fixtures": "./guide-format-fixtures.ts",
     "./guide-viewer-manifest": "./guide-viewer-manifest.ts",
-    "./review-discussions": "./review-discussions.ts"
+    "./review-discussions": "./review-discussions.ts",
+    "./review-discussion-context": "./review-discussion-context.ts"
   },
   "files": [
     "**/*.ts",

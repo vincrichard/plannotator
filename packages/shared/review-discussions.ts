@@ -1,3 +1,5 @@
+import { parseDiffToFiles } from '@plannotator/core/diff-files';
+import { limitDiscussionContext, selectedDiffContext } from '@plannotator/core/review-discussion-context';
 import type { ReadOnlyFork } from './read-only-fork';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -16,7 +18,7 @@ interface Options {
   unavailableReason?: string;
   getUnavailableReason?(): string | undefined;
   getSnapshotId(): string;
-  getContext(): { snapshotId: string; patch: string; description: string; cwd: string };
+  getContext(): { snapshotId: string; patch: string; cwd: string };
   isDecided(): boolean;
   createAgent(options: { cwd: string; sessionId?: string; onSessionId(id: string): void }): ReadOnlyFork;
 }
@@ -100,9 +102,13 @@ export function createReviewDiscussions(options: Options) {
     }
     running.set(thread.id, { controller, agent });
     // An agent-authored opener has not yet been seen by the discussion fork.
+    // Older saved threads included the whole patch; retries only need their captured selection.
+    const captured = thread.context.includes('\nSelected code from the review:\n')
+      ? thread.context.replace(/\nReviewed patch(?: \(truncated\))?:\n[\s\S]*?(?=\n\nAgent opening message:\n|$)/, '')
+      : thread.context;
     const context = thread.messages.slice(1).some(message => message.role === 'assistant')
       ? `Continue the same discussion at ${thread.anchor.filePath || '(whole review)'}:${thread.anchor.lineStart}-${thread.anchor.lineEnd} (${thread.anchor.side}), snapshot ${thread.snapshotId}. Use the reviewed code captured earlier; working files may have changed.`
-      : thread.context;
+      : limitDiscussionContext(captured, 16_000);
     const prompt = `${context}\n\nReviewer question:\n${question}\n\nAnswer this question only. Do not edit files, run modifications, submit or approve a review, or start another agent. This is a discussion fork; the parent agent receives change requests only on final review submission. Return a self-contained final answer; internal reasoning and intermediate messages are not displayed.`;
     void agent.answer(prompt, controller.signal, () => {
       if (controller.signal.aborted || stopped) return;
@@ -181,11 +187,15 @@ export function createReviewDiscussions(options: Options) {
           const context = options.getContext();
           if (body.snapshotId !== context.snapshotId) return fail('The reviewed snapshot changed. Select the code again.', 409);
           if (body.codeContext !== undefined && (typeof body.codeContext !== 'string' || body.codeContext.length > 64_000)) return fail('Invalid code context');
+          if (body.guideContext !== undefined && (typeof body.guideContext !== 'string' || body.guideContext.length > 8_000)) return fail('Invalid guided review context');
+          const file = parseDiffToFiles(context.patch).find(file => file.path === anchor.filePath);
+          const selected = file && anchor.scope !== 'general' && anchor.scope !== 'file' ? selectedDiffContext(file.patch, anchor) : '';
+          const code = selected || limitDiscussionContext(String(body.codeContext ?? anchor.selectedText ?? ''));
           const now = Date.now();
           const thread: StoredThread = {
             id: body.id, anchor, cwd: context.cwd, snapshotId: context.snapshotId, status: role === 'assistant' ? 'answered' : 'answering', createdAt: now, updatedAt: now,
             messages: [{ id: `${body.id}-question`, role, text: body.text, createdAt: now }],
-            context: `Plannotator review discussion.\n${context.description}\nSnapshot: ${context.snapshotId}\nLocation: ${anchor.filePath || '(whole review)'}:${anchor.lineStart}-${anchor.lineEnd} (${anchor.side})\nSelected code from the review:\n${body.codeContext ?? anchor.selectedText ?? ''}\nReviewed patch${context.patch.length > 200_000 ? ' (truncated)' : ''}:\n${context.patch.slice(0, 200_000)}`,
+            context: `Plannotator review discussion.\nSnapshot: ${context.snapshotId}\nLocation: ${anchor.filePath || '(whole review)'}:${anchor.lineStart}-${anchor.lineEnd} (${anchor.side})${code ? `\nSelected diff/code from the reviewed snapshot:\n${code}` : ''}${body.guideContext ? `\nGuided review context:\n${limitDiscussionContext(String(body.guideContext), 4_000)}` : ''}`,
           };
           if (role === 'assistant') thread.context += `\n\nAgent opening message:\n${body.text}`;
           threads.push(thread);

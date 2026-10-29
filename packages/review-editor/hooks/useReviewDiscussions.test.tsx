@@ -215,18 +215,21 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(bodies[2].id).not.toBe(bodies[0].id);
   });
 
-  test('retrying a question in the inline composer reuses its identity after a lost response', async () => {
-    const ids: string[] = [];
+  test('retrying a guided question after a lost response preserves its identity and context', async () => {
+    const bodies: Record<string, unknown>[] = [];
     await render(async (_url, options) => {
       if (!options) return Response.json({ supported: true, available: true, threads: [] });
-      ids.push(JSON.parse(String(options.body)).id);
-      if (ids.length === 1) throw new Error('Response lost');
+      bodies.push(JSON.parse(String(options.body)));
+      if (bodies.length === 1) throw new Error('Response lost');
       return Response.json({ ok: true });
     });
-    await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(false));
-    await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(true));
-    expect(ids[1]).toBe(ids[0]);
-    expect(discussions.expandedThreads[ids[0]]).toBe(true);
+    await act(async () => expect(await discussions.create(anchor, 'Question', '12 - | -old', 'Section: Shutdown')).toBe(false));
+    const pending = Object.values(discussions.failedQuestions)[0];
+    await act(async () => expect(await discussions.create(pending.anchor, pending.text, pending.codeContext, pending.guideContext, pending)).toBe(true));
+    expect(bodies[1].id).toBe(bodies[0].id);
+    expect(bodies[1].guideContext).toBe('Section: Shutdown');
+    expect(bodies[1].codeContext).toBe('12 - | -old');
+    expect(discussions.expandedThreads[String(bodies[0].id)]).toBe(true);
     expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
   });
 

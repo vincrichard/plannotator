@@ -2062,7 +2062,7 @@ export async function startReviewServer(
       : isRemote || options.tailnetPublished ? 'Discussion forks require a local review session.'
       : isStaticPatchMode || isPRMode ? 'Discussion forks currently support local repository reviews.'
       : !discussionParent ? 'Launch this review from a Codex, Claude Code, or OpenCode session to ask its fork.' : undefined,
-    getContext: () => ({ snapshotId: currentSnapshotId(), patch: currentPatch, description: buildCurrentAiReviewContext() ?? `Repository: ${resolveAgentCwd()}\nReview mode: ${currentDiffType}\nBase: ${currentBase}`, cwd: resolveAgentCwd() }),
+    getContext: () => ({ snapshotId: currentSnapshotId(), patch: currentPatch, cwd: resolveAgentCwd() }),
     isDecided: () => reviewDecided,
     createAgent: ({ cwd, ...agentOptions }) => createReadOnlyFork({ ...discussionParent!, cwd }, {
       ...agentOptions,

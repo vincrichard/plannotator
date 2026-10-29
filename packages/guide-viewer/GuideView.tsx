@@ -1,3 +1,4 @@
+import { limitDiscussionContext } from '@plannotator/core/review-discussion-context';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CodeGuideData, GuideSection, GuideDiffRef } from '@plannotator/core/guide';
 import type { DiffFile } from './types';
@@ -241,6 +242,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
       <div className="mt-6 space-y-4">
         {guide.sections.map((section, index) => (
           <GuideSectionCard
+            guideContext={`Guide: ${limitDiscussionContext(guide.title, 300)}\nIntent: ${limitDiscussionContext(guide.intent ?? '', 500)}`}
             key={`${section.title}:${index}`}
             section={section}
             files={resolved.sectionFiles[index] ?? []}
@@ -259,6 +261,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
 
         {unplacedSection && (
           <GuideSectionCard
+            guideContext={`Guide: ${limitDiscussionContext(guide.title, 300)}\nIntent: ${limitDiscussionContext(guide.intent ?? '', 500)}`}
             section={unplacedSection}
             files={resolved.unplacedFiles}
             index={guide.sections.length}

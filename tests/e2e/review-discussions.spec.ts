@@ -1,4 +1,3 @@
-import { createServer } from 'node:http';
 /** Real review routes and browser, with a deterministic headless agent instead of a paid model. */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { spawn, spawnSync } from 'node:child_process';
@@ -31,6 +30,10 @@ async function review(page: Page, answerText?: string, longFile: boolean | 'dele
   git('add', '.');
   git('commit', '-m', 'base');
   writeFileSync(join(repo, 'main.ts'), longFile === 'deleted' ? '' : contents(2));
+  if (provider === 'opencode') {
+    writeFileSync(join(repo, 'z-context.ts'), Array.from({ length: 4000 }, (_, i) => `export const unrelated${i} = \"UNRELATED_CONTEXT ${i}\";`).join('\n'));
+    git('add', 'z-context.ts');
+  }
   // The gate makes reviewing while answers are pending deterministic. Commentary/deltas must never become discussion messages.
   writeFileSync(join(root, 'bin', 'codex'), `#!${process.execPath}
 const { createInterface } = require('node:readline');
@@ -73,11 +76,9 @@ createInterface({input:process.stdin}).on('line', line => {
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { join, dirname } = require('node:path');
 const root = dirname(process.cwd());
-if (process.argv[4] === '/api/info') { process.stdout.write('{}'); process.exit(0); }
-if (process.argv[2] === 'debug') { process.stdout.write(process.cwd()); process.exit(0); }
-const [api, method, path] = process.argv.slice(2);
+const [api, method, path, flag, body] = process.argv.slice(2);
 if (api !== 'api') process.exit(2);
-const input = JSON.parse(readFileSync(0, 'utf8') || '{}');
+const input = body ? JSON.parse(body) : undefined;
 appendFileSync(join(root, 'requests.jsonl'), JSON.stringify({method,path,input}) + '\\n');
 const send = value => process.stdout.write(JSON.stringify(value));
 const child = 'ses_review_discussion', parent = '${openCodeParentId}';
@@ -109,26 +110,6 @@ if (path === '/api/session/'+parent+'/fork' && method === 'post') {
 } else if (path === '/api/session/'+child+'/interrupt' && method === 'post') send({data:{interrupted:true}});
 else { console.error('Unexpected OpenCode request: '+JSON.stringify(process.argv)); process.exit(2); }
 `, { mode: 0o700 });
-  let openCodeServer: ReturnType<typeof createServer> | undefined;
-  if (provider === 'opencode') {
-    // The real review must carry context beyond Linux's per-argument limit.
-    writeFileSync(join(repo, 'z-context.ts'), Array.from({ length: 4000 }, (_, i) => `export const context${i} = "review context ${i}";`).join('\n'));
-    git('add', 'z-context.ts');
-    openCodeServer = createServer(async (req, res) => {
-      if (req.headers.authorization !== `Basic ${Buffer.from('opencode:test').toString('base64')}`) { res.writeHead(401).end(); return; }
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const result = spawnSync(process.execPath, [join(root, 'bin', 'opencode'), 'api', req.method!.toLowerCase(), req.url!], {
-        cwd: repo, input: Buffer.concat(chunks), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
-      });
-      res.writeHead(result.status === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
-      res.end(result.status === 0 ? result.stdout : result.stderr);
-    });
-    await new Promise<void>(resolve => openCodeServer!.listen(0, '127.0.0.1', resolve));
-    const address = openCodeServer.address();
-    if (!address || typeof address === 'string') throw new Error('No fixture port');
-    writeFileSync(join(repo, 'service.json'), JSON.stringify({ url: `http://127.0.0.1:${address.port}`, password: 'test' }));
-  }
   const ready = join(root, 'ready.jsonl');
   const child = spawn(binary, ['review', repo, '--git', '--diff-type', 'uncommitted', '--no-git-remote-check', '--json'], {
     env: {
@@ -148,8 +129,6 @@ else { console.error('Unexpected OpenCode request: '+JSON.stringify(process.argv
   const close = async () => {
     if (child.exitCode === null) child.kill('SIGTERM'); // Only this test's own disposable review.
     await expect.poll(() => child.exitCode !== null || child.signalCode !== null).toBe(true);
-    openCodeServer?.closeAllConnections();
-    await new Promise<void>(resolve => openCodeServer ? openCodeServer.close(() => resolve()) : resolve());
     rmSync(root, { recursive: true, force: true });
   };
   try {
@@ -237,8 +216,10 @@ test('OpenCode questions persist inline after the popup closes and reuse their f
     expect(prompts).toHaveLength(2);
     expect(prompts[0].path).toBe(prompts[1].path);
     expect(prompts[0].path).not.toContain(openCodeParentId);
-    expect(prompts[0].input.text).toContain('Reviewed patch');
-    expect(Buffer.byteLength(JSON.stringify(prompts[0].input))).toBeGreaterThan(128 * 1024);
+    expect(prompts[0].input.text).toContain('main.ts:2-2 (new)');
+    expect(prompts[0].input.text).toContain('- 2 | +export const result = widget(2);');
+    expect(prompts[0].input.text).not.toContain('UNRELATED_CONTEXT');
+    expect(Buffer.byteLength(JSON.stringify(prompts[0].input))).toBeLessThan(4000);
     expect((await draft(page)).codeAnnotations ?? []).toEqual([]);
     await page.screenshot({ path: join(proofDir, `opencode-inline-thread-${testInfo.project.name}.png`) });
 
