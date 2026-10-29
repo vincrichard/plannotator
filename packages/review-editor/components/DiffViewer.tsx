@@ -42,6 +42,7 @@ import type { AIChatEntry } from '../hooks/useAIChat';
 import { type ReviewSearchMatch } from '../utils/reviewSearch';
 import {
   applySearchHighlights,
+  applyItemSearchHighlights,
   clearSearchHighlights,
   getSearchRoots,
   retryScrollToSearchMatch,
@@ -53,6 +54,7 @@ import {
 } from '../utils/lineSelectionBehavior';
 
 interface PierreDiffContentProps {
+  onRendered: (node: HTMLElement) => void;
   filePath: string;
   fileDiff: ReturnType<typeof getSingularPatch>;
   pierreTheme: { type: 'dark' | 'light'; css: string; syntaxTheme?: { dark: string; light: string } };
@@ -78,6 +80,7 @@ interface PierreDiffContentProps {
 }
 
 const PierreDiffContent = React.memo(({
+  onRendered,
   filePath,
   fileDiff,
   pierreTheme,
@@ -118,7 +121,10 @@ const PierreDiffContent = React.memo(({
         expandUnchanged,
         hunkSeparators: 'line-info',
         onPostRender: (node, instance, phase) => {
-          if (phase !== 'unmount') decorateMethodContext(node, instance);
+          if (phase !== 'unmount') {
+            decorateMethodContext(node, instance);
+            onRendered(node);
+          }
         },
         enableLineSelection: true,
         enableGutterUtility: true,
@@ -146,6 +152,7 @@ const PierreDiffContent = React.memo(({
     />
   );
 }, (prev, next) => (
+  prev.onRendered === next.onRendered &&
   prev.filePath === next.filePath &&
   prev.fileDiff === next.fileDiff &&
   prev.pierreTheme.type === next.pierreTheme.type &&
@@ -668,6 +675,14 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     return () => clearTimeout(timeoutId);
   }, [scrollTargetAnnotation, viewport, markdownPreviewEnabled]);
 
+  const searchStateRef = useRef({ searchQuery, searchMatches, activeSearchMatchId });
+  searchStateRef.current = { searchQuery, searchMatches, activeSearchMatchId };
+  const handleDiffRendered = useCallback((node: HTMLElement) => {
+    // Pierre can replace rows after React effects, including when syntax highlighting finishes.
+    const search = searchStateRef.current;
+    applyItemSearchHighlights(node, search.searchQuery, search.searchMatches, search.activeSearchMatchId);
+  }, []);
+
   // Apply search highlights to diff lines (including inside shadow DOM).
   // The query is already debounced upstream (useReviewSearch), so this runs synchronously.
   // activeSearchMatchId is NOT in deps — the swap effect handles that with O(1) updates.
@@ -1088,6 +1103,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                     </div>
                   )}
                   <PierreDiffContent
+                    onRendered={handleDiffRendered}
                     filePath={filePath}
                     fileDiff={augmentedDiff}
                     pierreTheme={pierreTheme}

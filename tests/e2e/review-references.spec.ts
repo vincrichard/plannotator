@@ -787,3 +787,26 @@ test('guided questions carry only the current chapter and selected code context'
     expect(JSON.stringify(submitted).length).toBeLessThan(4000);
   } finally { await session.close(); }
 });
+
+for (const singleFile of [false, true]) test(`search result navigation keeps the word highlighted in ${singleFile ? 'a file tab' : 'all files'}`, async ({ page }) => {
+  const session = await review(page);
+  try {
+    if (singleFile) await page.locator('.file-tree-item').filter({ hasText: 'a-main.ts' }).click();
+    await page.keyboard.press('ControlOrMeta+f');
+    const search = page.getByPlaceholder('Search diff...');
+    await search.fill('widget');
+    const mark = page.locator('diffs-container mark[data-review-search-active]');
+    for (const [snippet, path] of [
+      ['export const next = widget(2);', 'b-other.ts'],
+      ['export const main = widget(10);', 'a-main.ts'],
+      ['export const previous = widget(1);', 'b-other.ts'],
+    ]) {
+      await page.getByRole('button').filter({ hasText: snippet }).click();
+      await expect(mark.first()).toBeVisible();
+      await expect(mark.first()).toHaveText('widget');
+      await expect(mark.first()).toHaveAttribute('data-review-search-match', new RegExp(path.replace('.', '\\.')));
+    }
+    await search.fill('no_matching_word');
+    await expect(page.locator('diffs-container mark[data-review-search-match]')).toHaveCount(0);
+  } finally { await session.close(); }
+});
