@@ -160,7 +160,8 @@ export function createReviewDiscussions(options: Options) {
       if (req.method !== 'POST' && req.method !== 'PATCH') return fail('Method not allowed', 405);
       if (!callFlowInstallOriginAllowed(req.headers.get('origin'), url.host, req.headers.get('sec-fetch-site'))) return fail('Cross-origin discussion requests are not allowed', 403);
       if (stopped || options.isDecided()) return fail('This review has ended.', 409);
-      if (!snapshot().available) return fail(snapshot().reason ?? 'No supported parent agent session is available.', 503);
+      // Editing saved discussion state does not require a live agent or current checkout.
+      if (req.method === 'POST' && !snapshot().available) return fail(snapshot().reason ?? 'No supported parent agent session is available.', 503);
       let body: Record<string, unknown>;
       try {
         const raw = await req.text();

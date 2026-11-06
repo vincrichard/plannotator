@@ -17,6 +17,7 @@ function setup(provider: 'codex' | 'claude' | 'opencode' = 'codex') {
     getSnapshotId: () => snapshotId,
     getContext: () => ({ snapshotId, patch: 'diff --git a/other.ts b/other.ts\n--- a/other.ts\n+++ b/other.ts\n@@ -12,3 +12 @@\n-removed code\n-old next\n-old last\n+new', cwd: root }),
     isDecided: () => decided,
+    getUnavailableReason: (): string | undefined => undefined,
     createAgent: ({ sessionId, onSessionId }: { sessionId?: string; onSessionId(id: string): void }) => ({
       answer: (prompt: string, signal: AbortSignal, onActivity?: () => void) => new Promise<{ sessionId: string; text: string }>(resolve => {
         onSessionId(sessionId ?? 'private-fork');
@@ -36,6 +37,27 @@ function setup(provider: 'codex' | 'claude' | 'opencode' = 'codex') {
 const settle = async () => { await new Promise(resolve => setTimeout(resolve, 0)); };
 
 describe('review discussions', () => {
+  test('saved discussions can resolve, reopen and convert while new agent requests remain unavailable', async () => {
+    const f = setup();
+    await f.request('POST', '', f.question);
+    f.calls[0].complete('Saved answer'); await settle();
+    f.options.getUnavailableReason = () => 'Refresh the saved review before asking the agent.';
+    expect(f.store.snapshot().available).toBe(false);
+    expect((await f.request('PATCH', '/question-1', { action: 'resolve' }))!.status).toBe(200);
+    expect(f.store.snapshot().threads[0].status).toBe('resolved');
+    expect((await f.request('PATCH', '/question-1', { action: 'reopen' }))!.status).toBe(200);
+    expect((await f.request('POST', '/question-1/messages', { id: 'follow-up', text: 'More?' }))!.status).toBe(503);
+    expect((await f.request('POST', '', { ...f.question, id: 'question-2' }))!.status).toBe(503);
+    expect((await f.request('PATCH', '/question-1', { action: 'resolve', serverSession: 'old-browser' }))!.status).toBe(409);
+    expect((await f.request('PATCH', '/question-1', { action: 'resolve' }, { Origin: 'https://other.test' }))!.status).toBe(403);
+    expect((await f.request('PATCH', '/question-1', { action: 'convert', text: 'Keep this request' }))!.status).toBe(200);
+    expect(f.store.snapshot().threads[0].annotation?.text).toBe('Keep this request');
+    expect(f.calls).toHaveLength(1);
+    f.decide();
+    expect((await f.request('PATCH', '/question-1', { action: 'resolve' }))!.status).toBe(409);
+    f.store.dispose();
+  });
+
   for (const provider of ['codex', 'claude', 'opencode'] as const) test(`${provider} receives selected lines and guide context without the repository diff`, async () => {
     const f = setup(provider);
     const original = f.options.getContext();

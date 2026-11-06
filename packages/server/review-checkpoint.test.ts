@@ -104,6 +104,10 @@ test('durable review checkpoints restore exact text, drafts, viewed identity and
     expect((await (await request('/api/review-discussions')).json()).available).toBe(false);
     expect((await request('/api/review-discussions/opening/messages', 'POST', { serverSession: resumed.serverSession, id: 'followup', text: 'Read the current file' })).status).toBe(503);
     expect((await request('/api/review-discussions', 'POST', { ...opener, serverSession: resumed.serverSession, id: 'blocked' })).status).toBe(503);
+    expect((await request('/api/review-discussions/opening', 'PATCH', { serverSession: payload.serverSession, action: 'resolve' })).status).toBe(409);
+    expect((await request('/api/review-discussions/opening', 'PATCH', { serverSession: resumed.serverSession, action: 'resolve' })).status).toBe(200);
+    expect((await (await request('/api/review-discussions')).json()).threads[0].status).toBe('resolved');
+    expect((await request('/api/review-discussions/opening', 'PATCH', { serverSession: resumed.serverSession, action: 'reopen' })).status).toBe(200);
     expect((await request('/api/review-lifecycle/refresh', 'POST', { serverSession: payload.serverSession })).status).toBe(409);
     expect((await request('/api/review-lifecycle/refresh', 'POST', { serverSession: resumed.serverSession })).status).toBe(200);
     const refreshHeaders = { 'X-Plannotator-Session': resumed.serverSession };
