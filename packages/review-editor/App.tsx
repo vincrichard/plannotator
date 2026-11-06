@@ -1,3 +1,4 @@
+import { annotationRange } from './utils/annotationRange';
 import { selectedDiffContext } from '../core/review-discussion-context';
 import { useComposerDraftState } from '@plannotator/ui/hooks/useComposerDraftState';
 // Eager renderer registration (side-effect imports, evaluated before every
@@ -1761,10 +1762,11 @@ const ReviewApp: React.FC = () => {
   // (its toolbar selection lives in a file the single-file panel may never
   // have focused), so it must NOT go through activeFileIndex.
   const handleAskAIForFile = useCallback((filePath: string, question: string, selection?: FileAnnotationSelection) => {
-    const range = selection?.range ?? pendingSelection;
-    if (!range) return;
+    const selected = selection?.range ?? pendingSelection;
+    if (!selected) return;
     const file = selection?.file ?? files.find(f => f.path === filePath);
     if (!file) return;
+    const range = annotationRange(file.patch, selected);
     const lineStart = Math.min(range.start, range.end);
     const lineEnd = Math.max(range.start, range.end);
     const side = range.side === 'additions' ? 'new' : 'old';
@@ -2368,8 +2370,11 @@ const ReviewApp: React.FC = () => {
     tokenMeta?: TokenAnnotationMeta,
     selection?: FileAnnotationSelection
   ) => {
-    const range = selection?.range ?? pendingSelection;
-    if (!range) return;
+    const selected = selection?.range ?? pendingSelection;
+    if (!selected) return;
+    const file = selection?.file ?? files.find(f => f.path === filePath);
+    if (!file) return;
+    const range = annotationRange(file.patch, selected);
     const lineStart = Math.min(range.start, range.end);
     const lineEnd = Math.max(range.start, range.end);
     const newAnnotation: CodeAnnotation = {
@@ -2395,7 +2400,7 @@ const ReviewApp: React.FC = () => {
     };
     addCodeAnnotationsWithHistory([withPRContext(newAnnotation, selection?.file)]);
     if (!selection) clearPendingSelection();
-  }, [pendingSelection, identity, withPRContext, clearPendingSelection, addCodeAnnotationsWithHistory]);
+  }, [pendingSelection, files, identity, withPRContext, clearPendingSelection, addCodeAnnotationsWithHistory]);
 
   const handleAddCallFlowAnnotation = useCallback((
     targets: readonly CallFlowAnnotationTarget[],

@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const parentId = '11111111-1111-4111-8111-111111111111';
 const openCodeParentId = 'ses_review_parent';
 
-async function review(page: Page, answerText?: string, longFile: boolean | 'deleted' = false, provider: 'codex' | 'opencode' = 'codex') {
+async function review(page: Page, answerText?: string, longFile: boolean | 'deleted' | 'offset' = false, provider: 'codex' | 'opencode' = 'codex') {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-discussions-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -22,7 +22,10 @@ async function review(page: Page, answerText?: string, longFile: boolean | 'dele
   git('init', '-b', 'main');
   git('config', 'user.name', 'Discussion test');
   git('config', 'user.email', 'discussion@example.invalid');
-  const contents = (value: number) => longFile
+  const contents = (value: number) => longFile === 'offset'
+    ? (value === 2 ? Array.from({ length: 10 }, (_, i) => `export const inserted${i} = true;`).join('\n') + '\n' : '')
+      + Array.from({ length: 60 }, (_, i) => `export const value${i + 1} = ${i === 17 || i === 18 ? value : 1};`).join('\n') + '\n'
+    : longFile
     ? Array.from({ length: 160 }, (_, i) => `export const value${i + 1} = ${value};`).join('\n') + '\n'
     : `import { widget } from './helper';\nexport const result = widget(${value});\n`;
   writeFileSync(join(repo, 'main.ts'), contents(1));
@@ -734,3 +737,44 @@ test('quiet answers keep waiting, finish late or cancel without losing the quest
     expect((await snapshot(page)).threads[0].messages).toHaveLength(3);
   } finally { await cancelled.close(); }
 });
+
+for (const surface of ['all', 'file'] as const) {
+  test(`mixed-side questions and saved ranges remain inline in the ${surface} view`, async ({ page }) => {
+    const session = await review(page, undefined, 'offset');
+    try {
+      const seeded = await page.evaluate(async () => {
+        const diff = await (await fetch('/api/diff')).json();
+        const response = await fetch('/api/review-discussions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serverSession: diff.serverSession, snapshotId: diff.snapshotId,
+            id: 'legacy-range', role: 'assistant', text: 'Existing range explanation',
+            anchor: { filePath: 'main.ts', lineStart: 18, lineEnd: 28, side: 'old', scope: 'line' } }),
+        });
+        return response.status;
+      });
+      expect(seeded).toBe(201);
+      if (surface === 'file') await page.locator('.file-tree-item').filter({ hasText: 'main.ts' }).click();
+      await expect(page.locator('diffs-container [data-discussion-id="legacy-range"]')).toBeVisible();
+      await page.getByRole('button', { name: 'Unified', exact: true }).click();
+      await page.evaluate(() => {
+        const host = [...document.querySelectorAll('diffs-container')].find(node => node.shadowRoot?.querySelector('[data-line="28"]'))!;
+        const root = host.shadowRoot!;
+        const first = root.querySelector('[data-content] [data-line="18"][data-line-type="change-deletion"]')!;
+        const last = root.querySelector('[data-content] [data-line="28"][data-line-type="change-addition"]')!;
+        const range = document.createRange(); range.setStart(first, 0); range.setEnd(last, last.childNodes.length);
+        const selection = (root as ShadowRoot & { getSelection(): Selection }).getSelection();
+        selection.removeAllRanges(); selection.addRange(range);
+        host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+      });
+      await page.getByPlaceholder('Leave feedback...').fill('Explain this mixed selection');
+      await page.getByRole('button', { name: 'Ask agent', exact: true }).click();
+      const question = page.locator('diffs-container [data-discussion-id]').filter({ hasText: 'Explain this mixed selection' });
+      await expect(question).toBeVisible();
+      const state = await snapshot(page);
+      const added = state.threads.find((thread: { id: string }) => thread.id !== 'legacy-range');
+      expect(added.anchor).toMatchObject({ lineStart: 28, lineEnd: 28, side: 'new' });
+      session.release();
+      await expect(question).toContainText('Completed answer');
+    } finally { await session.close(); }
+  });
+}

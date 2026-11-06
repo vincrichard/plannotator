@@ -1,3 +1,4 @@
+import { annotationRange } from '../utils/annotationRange';
 import { composerDraftVersion, createComposerDraftStore } from '@plannotator/ui/utils/composerDrafts';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { CodeAnnotation, SelectedLineRange, CodeAnnotationType, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
@@ -166,10 +167,11 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
 
   // Shared: save current draft, restore form for new range, set toolbar state, notify parent
   const openToolbar = useCallback((
-    range: SelectedLineRange,
+    selected: SelectedLineRange,
     position: { top: number; left: number },
     tokenSelection?: TokenSelection,
   ) => {
+    const range = annotationRange(patch, selected);
     saveDraft();
     setEditingAnnotationId(null);
     setAskAIMode(false);

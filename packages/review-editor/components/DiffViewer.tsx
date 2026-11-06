@@ -1,3 +1,4 @@
+import { inlineAnnotationLine } from '../utils/annotationRange';
 import { useDiscussionAnnotations, useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useMemo, useRef, useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import { FileDiff, type DiffLineAnnotation } from '@pierre/diffs/react';
@@ -770,10 +771,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       .filter(ann => (ann.scope ?? 'line') === 'line')
       .map(ann => ({
         side: ann.side === 'new' ? 'additions' as const : 'deletions' as const,
-        lineNumber: ann.lineEnd,
+        lineNumber: inlineAnnotationLine(ann, fileDiff),
         metadata: lineAnnotationMetadata(ann),
       }));
-  }, [annotations]);
+  }, [annotations, fileDiff]);
 
   // Derive AI markers for the current file's lines
   const aiLineAnnotations = useMemo(() => {
@@ -877,12 +878,13 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         const anchorLine = getLineNumberFromNode(selection.anchorNode);
         const focusLine = getLineNumberFromNode(selection.focusNode);
         if (anchorLine == null || focusLine == null) return;
-        if (anchorLine === focusLine) return;
+        if (anchorLine === focusLine && getSideFromNode(selection.anchorNode) === getSideFromNode(selection.focusNode)) return;
         const side = getSideFromNode(selection.anchorNode);
         toolbarHostRef.current?.handleLineSelectionEnd({
-          start: Math.min(anchorLine, focusLine),
-          end: Math.max(anchorLine, focusLine),
+          start: anchorLine,
+          end: focusLine,
           side,
+          endSide: getSideFromNode(selection.focusNode),
         });
         selection.removeAllRanges();
       });

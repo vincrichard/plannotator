@@ -19,6 +19,8 @@ export function getSideFromNode(node: Node | null): 'additions' | 'deletions' {
   if (current?.nodeType === Node.TEXT_NODE) current = current.parentNode;
   while (current) {
     if (current instanceof HTMLElement) {
+      if (current.dataset.lineType === 'change-deletion') return 'deletions';
+      if (current.dataset.lineType === 'change-addition') return 'additions';
       if (current.hasAttribute('data-deletions')) return 'deletions';
       if (current.hasAttribute('data-additions')) return 'additions';
     }

@@ -1,3 +1,4 @@
+import { inlineAnnotationLine } from '../utils/annotationRange';
 import { useDiscussionAnnotations, useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -464,6 +465,7 @@ export function projectFileAIMarkers(
 }
 
 function projectFileAnnotations(
+  diff: FileDiffMetadata,
   annotations: CodeAnnotation[],
   aiMessages: AIChatEntry[],
   filePath: string,
@@ -479,7 +481,7 @@ function projectFileAnnotations(
     )
     .map((ann) => ({
       side: ann.side === 'new' ? ('additions' as const) : ('deletions' as const),
-      lineNumber: ann.lineEnd,
+      lineNumber: inlineAnnotationLine(ann, diff),
       metadata: lineAnnotationMetadata(ann),
     }));
   return [...reviewAnnotations, ...projectFileAIMarkers(aiMessages, filePath)];
@@ -544,7 +546,7 @@ function buildItemIdentity(
     fileDiff.cacheKey = `${id}#${patchHashes[index] ?? ''}`;
     // Seed annotations at build time so the first render (and any remount via
     // fileSetKey) already paints existing annotations without an extra update.
-    const fileAnnotations = projectFileAnnotations(annotations, aiMessages, file.path, prUrl, prDiffScope);
+    const fileAnnotations = projectFileAnnotations(fileDiff, annotations, aiMessages, file.path, prUrl, prDiffScope);
     // Generated files (#1317) seed collapsed like GitHub's diff view, unless
     // the user already expanded them this session. A view-state seed only —
     // the item carries the full fileDiff either way.
@@ -1807,7 +1809,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       const focusLine = getLineNumberFromNode(selection.focusNode);
       if (anchorLine == null || focusLine == null) return;
       // Single-line drags keep native copy behavior (same rule as DiffViewer).
-      if (anchorLine === focusLine) return;
+      if (anchorLine === focusLine && getSideFromNode(selection.anchorNode) === getSideFromNode(selection.focusNode)) return;
       const rootNode = selection.anchorNode?.getRootNode();
       const host = rootNode instanceof ShadowRoot ? rootNode.host : null;
       const itemId = host instanceof HTMLElement ? nodeToItemIdRef.current.get(host) : undefined;
@@ -1818,9 +1820,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       if (filePath == null) return;
       routeSelectionToToolbar(
         {
-          start: Math.min(anchorLine, focusLine),
-          end: Math.max(anchorLine, focusLine),
+          start: anchorLine,
+          end: focusLine,
           side: getSideFromNode(selection.anchorNode),
+          endSide: getSideFromNode(selection.focusNode),
         },
         filePath,
       );
@@ -1982,6 +1985,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       const item = handle?.getItem(itemId);
       if (handle == null || item == null || item.type !== 'diff') return;
       item.annotations = projectFileAnnotations(
+        item.fileDiff,
         allAnnotations,
         allAIMessages,
         filePath,

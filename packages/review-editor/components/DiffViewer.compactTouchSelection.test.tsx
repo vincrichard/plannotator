@@ -1,3 +1,4 @@
+import { getSideFromNode } from '../utils/diffSelection';
 /**
  * Compact touch keeps a dragged line range on screen instead of opening the
  * composer, so the range has to survive as a PAINTED selection until the
@@ -131,6 +132,12 @@ function Harness({ compactTouchLayout, onSelection }: {
 }
 
 describe.if(hasDom)('DiffViewer compact-touch line selection (DOM)', () => {
+  test('native text selections distinguish old and new rows in unified diffs', () => {
+    const code = document.createElement('code');
+    code.innerHTML = '<div data-line-type="change-deletion"><span>old code</span></div><div data-line-type="change-addition"><span>new code</span></div>';
+    expect(getSideFromNode(code.firstElementChild!.firstChild!.firstChild)).toBe('deletions');
+    expect(getSideFromNode(code.lastElementChild!.firstChild!.firstChild)).toBe('additions');
+  });
   let root: Root | null = null;
   let host: HTMLDivElement | null = null;
   const originalFetch = globalThis.fetch;
