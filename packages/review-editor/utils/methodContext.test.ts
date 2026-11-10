@@ -3,15 +3,29 @@ import { processFile, getSingularPatch } from '@pierre/diffs';
 import { createTwoFilesPatch } from 'diff';
 import { changedMethods, methodExpansions } from './methodContext';
 
-function fixture(old: string, next: string) {
-  const patch = createTwoFilesPatch('methods.py', 'methods.py', old, next);
-  const diff = processFile(patch, { oldFile: { name: 'methods.py', contents: old }, newFile: { name: 'methods.py', contents: next } });
+function fixture(old: string, next: string, name = 'methods.py') {
+  const patch = createTwoFilesPatch(name, name, old, next);
+  const diff = processFile(patch, { oldFile: { name, contents: old }, newFile: { name, contents: next } });
   if (!diff) throw new Error('Expected a diff');
   return { patch, diff };
 }
 const body = 'class C:\n    def run(self):\n' + Array.from({length: 140}, (_, i) => `        v${i} = ${i}\n`).join('') + '        return v139\n\ndef other():\n    return 1\n';
 
 describe('method expansion', () => {
+  test('Go receiver methods expand all changed hunks using each snapshot side', () => {
+    const old = 'package example\nfunc (s *Server) Run() {\n'
+      + Array.from({ length: 140 }, (_, i) => `  println(${i})\n`).join('') + '}\n\nfunc other() {}\n';
+    const { diff } = fixture(old, old.replace('println(20)', 'println(200)\n  println("added")').replace('println(100)', 'println(1000)'), 'server.go');
+    for (const [side, end] of [['deletions', 143], ['additions', 144]] as const) {
+      const methods = changedMethods(diff, side);
+      expect(methods).toEqual([{ name: 'Server.Run', start: 2, end, hunkIndex: 0, side }]);
+      expect(methodExpansions(diff, side, methods[0])).toEqual([
+        { index: 0, direction: 'down', count: 17 },
+        { index: 1, direction: 'both', count: 71 },
+        { index: 2, direction: 'up', count: 36 },
+      ]);
+    }
+  });
   test('one control for the first change spans the signature, interior gap and trailing body', () => {
     const { diff } = fixture(body, body.replace('v20 = 20', 'v20 = 200').replace('v100 = 100', 'v100 = 1000'));
     const methods = changedMethods(diff, 'additions');

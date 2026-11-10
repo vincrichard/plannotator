@@ -1,4 +1,5 @@
 import { pythonLanguage } from '@codemirror/lang-python';
+import { goLanguage } from '@codemirror/lang-go';
 import { javascriptLanguage, jsxLanguage, typescriptLanguage, tsxLanguage } from '@codemirror/lang-javascript';
 import { Text } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
@@ -9,20 +10,35 @@ export interface MethodRange {
   end: number;
 }
 
-const functions = new Set(['FunctionDefinition', 'FunctionDeclaration', 'FunctionExpression', 'ArrowFunction', 'MethodDeclaration']);
+const functions = new Set(['FunctionDefinition', 'FunctionDeclaration', 'FunctionExpression', 'ArrowFunction', 'MethodDeclaration', 'FunctionDecl', 'MethodDecl']);
 
 /** Snapshot coordinates, including decorators; unsupported or malformed methods are omitted. */
 export function methodRanges(path: string, content: string): MethodRange[] {
   const extension = path.split('.').pop()?.toLowerCase();
   const language = extension === 'py' || extension === 'pyi' ? pythonLanguage
+    : extension === 'go' ? goLanguage
     : extension === 'tsx' ? tsxLanguage : extension === 'jsx' ? jsxLanguage
     : ['ts', 'mts', 'cts'].includes(extension ?? '') ? typescriptLanguage
     : ['js', 'mjs', 'cjs'].includes(extension ?? '') ? javascriptLanguage : null;
-  // shortcut: use the existing Python and JS/TS parsers; add others when their method context is needed.
+  // shortcut: support Python, JS/TS and Go; add parsers for other languages when needed.
   if (!language) return [];
   const tree = language.parser.parse(content);
   const document = Text.of(content.split('\n'));
   const named = (node: SyntaxNode): string | undefined => {
+    if (node.name === 'FunctionDecl' || node.name === 'MethodDecl') {
+      // Go also permits declarations with an external body; there is nothing to expand there.
+      if (!node.getChild('Block')) return;
+      const name = node.getChild('DefName') ?? node.getChild('FieldName');
+      if (!name) return;
+      const label = content.slice(name.from, name.to);
+      if (node.name === 'MethodDecl') {
+        const receiver = node.getChild('Parameters')?.cursor();
+        if (receiver) do {
+          if (receiver.name === 'TypeName') return `${content.slice(receiver.from, receiver.to)}.${label}`;
+        } while (receiver.next());
+      }
+      return label;
+    }
     let name = node.name === 'ArrowFunction' ? null : node.getChild('VariableName') ?? node.getChild('VariableDefinition')
       ?? node.getChild('PropertyDefinition') ?? node.getChild('PrivatePropertyDefinition');
     if (!name && ['ArrowFunction', 'FunctionExpression'].includes(node.name)) {
