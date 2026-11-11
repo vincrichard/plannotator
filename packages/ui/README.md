@@ -35,6 +35,8 @@ configurePlannotatorUI({
 });
 ```
 
+`RenderedMarkdown` also accepts an optional `renderCodeBlock(block)` callback for top-level code fences. Return a custom React node for a selected language, or `null`/`undefined` to keep the standard code block. Other Markdown keeps the shared parser and block renderer.
+
 Anything you don't pass keeps Plannotator's default. A few component-specific overrides (e.g. an "open in editor" diff action) are passed as props where you render that component.
 
 ### Resize-handle seams (`ResizeHandle` / `useResizablePanel`)

@@ -3,6 +3,7 @@
 >
 > - **Commentable references:** Jump to definitions and references, expand full Python, JavaScript/TypeScript and Go methods, and comment directly on their code.
 > - **Inline agent discussions:** Ask Codex, Claude Code or OpenCode questions beside the diff, with follow-ups in the same conversation.
+> - **Rich thread messages:** Render Markdown tables, lists and Mermaid diagrams directly in discussions.
 > - **Copyable agent replies:** Copy a whole response or a ready-to-paste draft; threads collapse after successful questions.
 > - **Last-turn diffs:** Review only the latest user turn that changed code, using captured Codex or Claude turn snapshots.
 > - **Focused guided reviews:** Split large changes into smaller code blocks, include repository context, and check that the guide covers the diff.

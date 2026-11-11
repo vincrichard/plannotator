@@ -97,6 +97,15 @@ describe.if(hasDom)('RenderedMarkdown host seams (DOM)', () => {
     expect(after.querySelector('h1')?.hasAttribute('id')).toBe(false);
   });
 
+  test('a code renderer replaces selected languages and keeps ordinary blocks and code', async () => {
+    const el = await render(<RenderedMarkdown markdown={'# Heading\n\n```draft\nReady to paste\n```\n\n```ts\nconst value = 1;\n```'}
+      renderCodeBlock={block => block.language === 'draft' ? <aside>{block.content}</aside> : undefined} />);
+    expect(el.querySelector('h1')?.textContent).toBe('Heading');
+    expect(el.querySelector('aside')?.textContent).toBe('Ready to paste');
+    expect(el.querySelectorAll('pre')).toHaveLength(1);
+    expect(el.querySelector('pre')?.textContent).toContain('const value = 1;');
+  });
+
   test('an enclosing LocalLinkContext still applies when resolveLocalLink is absent', async () => {
     const el = await render(
       <LocalLinkContext.Provider value={() => ({ kind: 'unavailable', title: 'From the outer host' })}>

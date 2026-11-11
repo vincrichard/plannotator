@@ -27,6 +27,16 @@ afterEach(async () => {
   if (originalFetch) globalThis.fetch = originalFetch;
 });
 describe.if(typeof document !== 'undefined')('discussion conversion', () => {
+  test('responses render headings, tables, blockquotes and reference links', async () => {
+    const response = '# Result\n\n| Change | Status |\n| --- | --- |\n| **Guard** | Kept |\n\n> Retain failures.\n\nSee [details][ref].\n\n[ref]: https://example.com/details';
+    host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+    await act(async () => root!.render(<DiscussionResponse text={response} />));
+    expect(host.querySelector('h1')?.textContent).toBe('Result');
+    expect(host.querySelectorAll('th')).toHaveLength(2);
+    expect(host.querySelector('td strong')?.textContent).toBe('Guard');
+    expect(host.querySelector('blockquote')?.textContent).toContain('Retain failures.');
+    expect(host.querySelector('a')?.getAttribute('href')).toBe('https://example.com/details');
+  });
   test('response and draft copy buttons preserve Markdown, nested fences and indentation without copying explanations', async () => {
     const copied: string[] = [];
     const previous = Object.getOwnPropertyDescriptor(navigator, 'clipboard');

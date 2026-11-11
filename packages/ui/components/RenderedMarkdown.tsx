@@ -4,6 +4,7 @@ import { BlockRenderer } from './BlockRenderer';
 import { LocalLinkContext, type LocalLinkResolver } from './LocalLinkContext';
 import { ImageResolverContext, type ImageResolver } from './ImageResolverContext';
 import { buildHeadingSlugMap } from '../utils/slugify';
+import type { Block } from '../types';
 
 /**
  * Full markdown renderer for surfaces outside the plan editor (e.g. the PR
@@ -38,6 +39,8 @@ export interface RenderedMarkdownProps {
    * host can scroll to `#section` links. Absent/false, headings carry no id.
    */
   headingAnchors?: boolean;
+  /** Optional top-level code renderer; null/undefined keeps the standard code block. */
+  renderCodeBlock?: (block: Block) => React.ReactNode;
 }
 
 export const RenderedMarkdown: React.FC<RenderedMarkdownProps> = ({
@@ -51,6 +54,7 @@ export const RenderedMarkdown: React.FC<RenderedMarkdownProps> = ({
   resolveLocalLink,
   resolveImage,
   headingAnchors = false,
+  renderCodeBlock,
 }) => {
   const blocks = useMemo(() => parseMarkdownToBlocks(markdown), [markdown]);
   const groups = useMemo(() => groupBlocks(blocks), [blocks]);
@@ -75,7 +79,10 @@ export const RenderedMarkdown: React.FC<RenderedMarkdownProps> = ({
             );
           })()
         ) : (
-          <BlockRenderer key={group.block.id} block={group.block} headingAnchorId={headingSlugMap?.get(group.block.id)} {...cb} />
+          <React.Fragment key={group.block.id}>
+            {(group.block.type === 'code' ? renderCodeBlock?.(group.block) : undefined)
+              ?? <BlockRenderer block={group.block} headingAnchorId={headingSlugMap?.get(group.block.id)} {...cb} />}
+          </React.Fragment>
         ),
       )}
     </div>

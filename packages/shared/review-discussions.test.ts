@@ -71,6 +71,7 @@ describe('review discussions', () => {
     expect(prompt).toContain('Section: Shutdown');
     expect(prompt).toContain('```draft');
     expect(prompt).toContain('Copy draft');
+    expect(prompt).toContain('fenced mermaid blocks');
     expect(prompt).not.toContain('UNRELATED_CONTEXT');
     expect(prompt).not.toContain('huge.ts');
     expect(Buffer.byteLength(JSON.stringify({ text: prompt }))).toBeLessThan(2000);

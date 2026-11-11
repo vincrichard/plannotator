@@ -544,6 +544,46 @@ for (const failure of ['ended', 'disconnected'] as const) {
 for (const width of [390, 1440]) {
   test.describe(`discussion layout at ${width}px`, () => {
     test.use({ viewport: { width, height: 900 }, hasTouch: width === 390 });
+    test('thread Markdown renders tables and Mermaid while malformed diagrams retain their source', async ({ page, context }) => {
+      const table = '| Step | Result |\n| --- | --- |\n| Start | **Ready** |\n| Finish | Saved |';
+      const draftText = '# Reply\n\n' + table;
+      const answer = '# Lifecycle\n\n' + table + '\n\n1. Start the task\n2. Save the result\n\n> Keep the snapshot.\n\n```mermaid\nflowchart LR\n  Start --> Save\n```\n\n```mermaid\nthis is not a diagram\n```\n\n```draft\n' + draftText + '\n```\n\n<img src="/missing-thread-image" onerror="window.threadHtmlExecuted=true"><script>window.threadHtmlExecuted=true</script>';
+      const session = await review(page, answer);
+      try {
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        await selectLine(page, page.locator('diffs-container').first(), 2, width === 390 ? 'unified' : 'additions');
+        await page.getByPlaceholder('Leave feedback...').fill('## Question\n\n' + table);
+        await page.getByRole('button', { name: 'Ask agent', exact: true }).click();
+        session.release();
+        const thread = page.locator('diffs-container [data-discussion-id]');
+        await expect(thread).toContainText('Answered');
+        await expandThread(thread);
+        await expect(thread.getByRole('heading', { name: 'Question', exact: true })).toBeVisible();
+        await expect(thread.getByRole('heading', { name: 'Lifecycle', exact: true })).toBeVisible();
+        await expect(thread.locator('table')).toHaveCount(2);
+        await expect(thread.locator('blockquote')).toContainText('Keep the snapshot.');
+        const diagrams = thread.locator('[data-diagram-block="mermaid"]');
+        await expect(diagrams).toHaveCount(2);
+        const graph = diagrams.first();
+        await expect(graph.locator('[data-diagram-svg] svg')).toBeVisible({ timeout: 30000 });
+        await expect(graph.locator('[data-diagram-svg]')).toContainText('Start');
+        await expect(graph.locator('[data-diagram-svg]')).toContainText('Save');
+        await expect(diagrams.last()).toContainText('Mermaid Error');
+        await expect(diagrams.last().locator('pre').last()).toContainText('this is not a diagram');
+        await expect(thread.locator('script, [onerror]')).toHaveCount(0);
+        expect(await page.evaluate(() => (window as unknown as { threadHtmlExecuted?: boolean }).threadHtmlExecuted)).toBeUndefined();
+        await expect.poll(() => thread.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+        await graph.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: join(proofDir, `thread-markdown-${width}.png`) });
+        await graph.hover();
+        await graph.getByRole('button', { name: 'Show source', exact: true }).click();
+        await expect(graph.locator('pre')).toContainText('Start --> Save');
+        await thread.getByRole('button', { name: 'Copy response', exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(answer);
+        await thread.getByRole('button', { name: 'Copy draft', exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(draftText);
+      } finally { await session.close(); }
+    });
     test('sent questions collapse and agent replies offer response and draft copying', async ({ page, context }) => {
       const draftText = '**Ready to send**\n\n- Keep the guard\n  - Preserve errors\n\n```go\n  run()\n```';
       const answer = `Proposed reply:\n\n\`\`\`\`draft\n${draftText}\n\`\`\`\`\n\nExplanation outside the draft.`;
@@ -604,9 +644,9 @@ for (const width of [390, 1440]) {
         expect((await fits()).width).toBeLessThan(width);
         session.release();
         await expect(thread).toContainText('Answered');
-        await expect(thread.locator('.inline-code-block')).toBeVisible();
+        await expect(thread.locator('pre')).toBeVisible();
         await expect.poll(async () => (await fits()).overflow).toBeLessThanOrEqual(1);
-        const code = thread.locator('.inline-code-block');
+        const code = thread.locator('pre');
         expect(await code.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
         await code.evaluate(el => { el.scrollLeft = 80; });
         expect(await code.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
