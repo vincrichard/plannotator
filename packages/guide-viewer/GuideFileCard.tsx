@@ -119,7 +119,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
             {...getDiffRendererProps({ file: shownFile, focused, blockId, contextOnly, guideContext: `${guideContext ?? ''}${summary ? `\nBlock: ${limitDiscussionContext(summary, 800)}` : ''}` })}
             files={fileList}
             sourceSide={contextOnly ? 'new' : undefined}
-            {...(blockId ? { contextExpansionAvailable: false } : {})}
+            {...(blockId && shownFile.patch !== fullFile?.patch ? { contextExpansionAvailable: false } : {})}
             fileScrollTarget={target}
             fileOrder="list"
             mountCollapsed={collapsed}

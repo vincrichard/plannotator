@@ -531,8 +531,11 @@ describe('Focused guide blocks', () => {
     const expand = Array.from(second.querySelectorAll('button')).find(button => button.textContent === 'Show full file diff')!;
     await act(async () => expand.click());
     expect((latestCodeViewProps.at(-1)!.files as DiffFile[])[0].patch).toContain('+line 900');
+    expect(latestCodeViewProps.at(-1)!.contextExpansionAvailable).toBeUndefined();
     expect(second.textContent).toContain('Show focused block');
     expect(first.textContent).toContain('Show full file diff');
+    await act(async () => expand.click());
+    expect(latestCodeViewProps.at(-1)!.contextExpansionAvailable).toBe(false);
   });
 
   test.skipIf(!hasDom)('reveals the block containing a searched line rather than the first occurrence of its file', async () => {

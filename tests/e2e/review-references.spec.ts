@@ -66,6 +66,10 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
         { title: 'New calls', overview: 'Read each part of the added file.', diffs: [0, 1, 2, 3].map(i => ({
           id: `part-${i}`, kind: 'diff', file: 'd-added.ts', newRange: { start: i * 250 + 1, end: Math.min((i + 1) * 250, addedLines) },
         })) },
+        ...(methods ? [{ title: 'Method changes', overview: 'Read the changes inside the method.', diffs: [
+          { id: 'method-start', kind: 'diff', file: methodFile, oldRange: { start: 54, end: 54 }, newRange: { start: 54, end: 55 } },
+          { id: 'method-end', kind: 'diff', file: methodFile, oldRange: { start: 214, end: 214 }, newRange: { start: 215, end: 215 } },
+        ] }] : []),
         { title: 'Implementation', overview: 'The unchanged implementation.', diffs: [{
           id: 'implementation', kind: 'context', file: 'helper.ts', newRange: { start: 1, end: 3 },
         }] },
@@ -848,5 +852,40 @@ for (const mode of ['all', 'file'] as const) test(`native context then full meth
     await expect(viewer.locator(`[data-${side}] [data-line="265"]`)).toContainText('return value');
     await expect(control).toHaveCount(0);
     await expect(viewer.locator(`[data-${side}] [data-line="330"]`)).toHaveCount(0);
+  } finally { await session.close(); }
+});
+
+// A focused guide must re-enable normal context controls when showing the full patch.
+test('guided full-file diff expands context and methods and returns to the focused excerpt', async ({ page }) => {
+  const session = await review(page, false, 60, true, true, 900, true);
+  try {
+    const block = page.locator('[data-guide-block="method-start"]');
+    await block.scrollIntoViewIfNeeded();
+    await expect(block.locator('[data-expand-method]')).toHaveCount(0);
+    await block.getByRole('button', { name: 'Show full file diff', exact: true }).click();
+    const method = block.locator('[data-expand-method="Runner.run"]');
+    await expect(method).toHaveCount(1);
+    await method.click();
+    await expect(block.locator('[data-additions] [data-line="23"]')).toContainText('def run');
+    await block.locator('diffs-container').evaluate(element => {
+      let viewport = element.parentElement;
+      while (viewport && !(viewport.scrollHeight > viewport.clientHeight && getComputedStyle(viewport).overflowY === 'auto')) viewport = viewport.parentElement;
+      if (!viewport) throw new Error('Missing guide code scroll viewport');
+      viewport.scrollTop = viewport.scrollHeight;
+      viewport.dispatchEvent(new Event('scroll'));
+    });
+    await expect(block.locator('[data-additions] [data-line="265"]')).toContainText('return value');
+    await block.getByRole('button', { name: 'Show focused block', exact: true }).click();
+    await expect(block.locator('[data-additions] [data-line="265"]')).toHaveCount(0);
+    await expect(block.locator('[data-expand-method]')).toHaveCount(0);
+    await expect(block.getByRole('button', { name: 'Show full file diff', exact: true })).toBeVisible();
+
+    const context = page.locator('[data-guide-block="c-distant.ts"]');
+    await context.scrollIntoViewIfNeeded();
+    await context.getByRole('button', { name: 'Show full file diff', exact: true }).click();
+    await expect(context.locator('[data-additions] [data-line="20"]')).toHaveCount(0);
+    await expect(context.locator('[data-gutter] [data-expand-button]').first()).toBeVisible();
+    await context.locator('[data-gutter] [data-expand-button]').first().click();
+    await expect(context.locator('[data-additions] [data-line="20"]')).toContainText('context');
   } finally { await session.close(); }
 });
