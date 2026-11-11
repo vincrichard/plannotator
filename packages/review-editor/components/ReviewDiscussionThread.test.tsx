@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ReviewDiscussionThread } from './ReviewDiscussionThread';
+import { DiscussionResponse } from './DiscussionResponse';
 import { ReviewDiscussionsProvider, useReviewDiscussionState } from '../hooks/useReviewDiscussions';
 import type { ReviewDiscussion } from '../../core/review-discussions';
 
@@ -26,6 +27,28 @@ afterEach(async () => {
   if (originalFetch) globalThis.fetch = originalFetch;
 });
 describe.if(typeof document !== 'undefined')('discussion conversion', () => {
+  test('response and draft copy buttons preserve Markdown, nested fences and indentation without copying explanations', async () => {
+    const copied: string[] = [];
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+    try {
+      const draft = '**Proposed reply**\n\n- Keep this list\n  - Nested item\n\n```go\n  run()\n```\n<script>literal text</script>';
+      const response = `Here is the reply.\n\n\`\`\`\`draft\n${draft}\n\`\`\`\`\n\nAnother option:\n\n\`\`\`draft\nSecond draft\n\`\`\`\n\nExplanation stays outside.`;
+      host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+      await act(async () => root!.render(<DiscussionResponse text={response} />));
+      const button = (label: string) => [...host!.querySelectorAll('button')].find(node => node.textContent === label)!;
+      expect(host.querySelectorAll('pre')).toHaveLength(2);
+      expect(host.querySelector('pre')!.textContent).toBe(draft);
+      expect(host.querySelector('script')).toBeNull();
+      await act(async () => button('Copy response').click());
+      await act(async () => button('Copy draft').click());
+      await act(async () => button('Copy draft').click());
+      expect(copied).toEqual([response, draft, 'Second draft']);
+    } finally {
+      if (previous) Object.defineProperty(navigator, 'clipboard', previous);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
   test('folds history per new question while keeping its pending and completed answer visible', async () => {
     originalFetch = globalThis.fetch;
     globalThis.fetch = Object.assign(async () => Response.json({ supported: true, available: true, threads: [] }), { preconnect: originalFetch.preconnect });

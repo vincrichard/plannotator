@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { ReviewDiscussion } from '../../core/review-discussions';
 import { useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import { renderInlineMarkdown } from '../utils/renderInlineMarkdown';
+import { DiscussionResponse } from './DiscussionResponse';
 
 const elapsed = (ms: number) => {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -33,8 +34,10 @@ export function ReviewDiscussionThread({ thread }: { thread: ReviewDiscussion })
   const latestQuestionIndex = thread.messages.reduce((latest, message, index) => message.role === 'user' ? index : latest, 0);
   const latestQuestion = thread.messages[latestQuestionIndex];
   const renderMessage = (message: ReviewDiscussion['messages'][number]) => <div key={message.id}>
-    <div className="text-xs text-muted-foreground">{message.role === 'user' ? 'You' : 'Agent'}</div>
-    <div className="review-comment-body">{renderInlineMarkdown(message.text)}</div>
+    {message.role === 'assistant' ? <DiscussionResponse text={message.text} /> : <>
+      <div className="text-xs text-muted-foreground">You</div>
+      <div className="review-comment-body">{renderInlineMarkdown(message.text)}</div>
+    </>}
   </div>;
   const run = async (action: () => Promise<unknown>) => {
     setPending(true); setError(undefined);

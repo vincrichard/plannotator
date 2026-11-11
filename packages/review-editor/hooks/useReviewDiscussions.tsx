@@ -112,7 +112,7 @@ export function useReviewDiscussionState(snapshotId?: string, logicalReviewId?: 
     saveFailedQuestions(previous => ({ ...previous, [question.id]: question }));
     try {
       await request('', 'POST', question);
-      setThreadExpanded(question.id, true);
+      setThreadExpanded(question.id, false);
       saveFailedQuestions(previous => {
         const next = { ...previous };
         delete next[question.id];
@@ -140,11 +140,12 @@ export function useReviewDiscussionState(snapshotId?: string, logicalReviewId?: 
     }
     persist();
     await request(`/${encodeURIComponent(id)}/messages`, 'POST', message);
+    setThreadExpanded(id, false);
     if (pendingMessages.get(id) === message) {
       pendingMessages.delete(id);
       persist();
     }
-  }, [request, pendingMessages, storageKey]);
+  }, [request, pendingMessages, storageKey, setThreadExpanded]);
   const update = useCallback(async (id: string, action: 'resolve' | 'reopen' | 'convert' | 'keep-waiting' | 'cancel', text?: string) => {
     const messageId = action === 'keep-waiting' || action === 'cancel' ? state.threads.find(thread => thread.id === id)?.messages.at(-1)?.id : undefined;
     return request(`/${encodeURIComponent(id)}`, 'PATCH', { action, text, messageId });

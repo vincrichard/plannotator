@@ -109,7 +109,7 @@ export function createReviewDiscussions(options: Options) {
     const context = thread.messages.slice(1).some(message => message.role === 'assistant')
       ? `Continue the same discussion at ${thread.anchor.filePath || '(whole review)'}:${thread.anchor.lineStart}-${thread.anchor.lineEnd} (${thread.anchor.side}), snapshot ${thread.snapshotId}. Use the reviewed code captured earlier; working files may have changed.`
       : limitDiscussionContext(captured, 16_000);
-    const prompt = `${context}\n\nReviewer question:\n${question}\n\nAnswer this question only. Do not edit files, run modifications, submit or approve a review, or start another agent. This is a discussion fork; the parent agent receives change requests only on final review submission. Return a self-contained final answer; internal reasoning and intermediate messages are not displayed.`;
+    const prompt = `${context}\n\nReviewer question:\n${question}\n\nAnswer this question only. Do not edit files, run modifications, submit or approve a review, or start another agent. This is a discussion fork; the parent agent receives change requests only on final review submission. Return a self-contained final answer; internal reasoning and intermediate messages are not displayed. When asked to draft a reply or change request, put each ready-to-paste draft in a top-level fenced block with language draft (opening line: \`\`\`draft). Put only the draft inside; keep explanations outside. Preserve its Markdown, indentation and line breaks. Use a longer outer fence if the draft contains code fences. The UI provides Copy draft for each block.`;
     void agent.answer(prompt, controller.signal, () => {
       if (controller.signal.aborted || stopped) return;
       const now = Date.now();

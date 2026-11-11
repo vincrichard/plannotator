@@ -192,6 +192,7 @@ test('OpenCode questions persist inline after the popup closes and reuse their f
     const thread = page.locator('diffs-container [data-discussion-id]');
     await expect(thread).toHaveCount(1);
     await expect(thread).toContainText('Why does OpenCode change this call?');
+    await expandThread(thread);
     await expect(thread.getByLabel('Follow-up question', { exact: true })).toBeVisible();
     const id = await thread.getAttribute('data-discussion-id');
     await expect.poll(() => session.requests().filter(request => request.path.endsWith('/prompt')).length).toBe(1);
@@ -206,6 +207,8 @@ test('OpenCode questions persist inline after the popup closes and reuse their f
     await expect(thread).toContainText('Completed answer for this discussion.');
     await thread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
     await thread.getByRole('button', { name: 'Send question', exact: true }).click();
+    await expect(thread.locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'false');
+    await expandThread(thread);
     await expect(thread).toContainText('Completed follow-up answer.');
     const state = await snapshot(page);
     expect(state.threads).toHaveLength(1);
@@ -271,6 +274,8 @@ for (const mobile of [false, true]) test.describe(`agent opener on ${mobile ? 'p
       expect((await draft(page)).codeAnnotations ?? []).toEqual([]);
       await secondThread.getByLabel('Follow-up question', { exact: true }).fill('Explain further: which behavior changes?');
       await secondThread.getByRole('button', { name: 'Send question', exact: true }).click();
+      await expect(secondThread.locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'false');
+      await expandThread(secondThread);
       await expect.poll(() => session.requests().filter(r => r.method === 'turn/start').length).toBe(1);
       const prompt = session.requests().find(r => r.method === 'turn/start').params.input[0].text;
       expect(prompt).toContain(opening.text);
@@ -330,6 +335,7 @@ test('questions run separately while reviewing; only converted requests enter pe
     await expect(page.getByPlaceholder('Leave feedback...')).toHaveValue('Why did the old call change?');
     await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
     await expect(page.locator('diffs-container [data-discussion-id]')).toContainText('Answering');
+    await expandThread(page.locator('diffs-container [data-discussion-id]'));
     await expect(page.locator('diffs-container').getByLabel('Follow-up question', { exact: true })).toBeVisible();
     await page.unroute('**/api/review-discussions');
     await expect(page.getByRole('heading', { name: 'Discussions', exact: true })).toHaveCount(0);
@@ -374,6 +380,8 @@ test('questions run separately while reviewing; only converted requests enter pe
     await expect(oldThread).toContainText('Completed answer for this discussion.');
     await oldThread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
     await oldThread.getByRole('button', { name: 'Send question', exact: true }).click();
+    await expect(oldThread.locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'false');
+    await expandThread(oldThread);
     await expect(oldThread).toContainText('Completed follow-up answer.');
     await expect(oldThread.getByText('Completed answer for this discussion.', { exact: true })).toBeHidden();
     await expect(oldThread.getByText('Completed follow-up answer.', { exact: true })).toBeVisible();
@@ -505,6 +513,7 @@ for (const failure of ['ended', 'disconnected'] as const) {
       await selectLine(page, main, 2, 'deletions');
       await page.getByPlaceholder('Leave feedback...').fill('First question');
       await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
+      await expandThread(page.locator('diffs-container [data-discussion-id]'));
       const followUp = page.getByLabel('Follow-up question', { exact: true });
       await followUp.fill('Unsent follow-up');
       await selectLine(page, main, 2, 'additions');
@@ -535,6 +544,43 @@ for (const failure of ['ended', 'disconnected'] as const) {
 for (const width of [390, 1440]) {
   test.describe(`discussion layout at ${width}px`, () => {
     test.use({ viewport: { width, height: 900 }, hasTouch: width === 390 });
+    test('sent questions collapse and agent replies offer response and draft copying', async ({ page, context }) => {
+      const draftText = '**Ready to send**\n\n- Keep the guard\n  - Preserve errors\n\n```go\n  run()\n```';
+      const answer = `Proposed reply:\n\n\`\`\`\`draft\n${draftText}\n\`\`\`\`\n\nExplanation outside the draft.`;
+      const session = await review(page, answer);
+      try {
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        await selectLine(page, page.locator('diffs-container').first(), 2, width === 390 ? 'unified' : 'additions');
+        await page.getByPlaceholder('Leave feedback...').fill('Draft a reply');
+        await page.getByRole('button', { name: 'Ask agent', exact: true }).click();
+        const thread = page.locator('diffs-container [data-discussion-id]');
+        const header = thread.locator('button[aria-expanded]');
+        await expect(header).toHaveAttribute('aria-expanded', 'false');
+        await expect(header).toContainText('Answering');
+        session.release();
+        await expect(header).toContainText('Answered');
+        await expect(header).toContainText('Unread');
+        await expect(header).toHaveAttribute('aria-expanded', 'false');
+        await expandThread(thread);
+        await thread.getByRole('button', { name: 'Copy response', exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(answer);
+        await thread.getByRole('button', { name: 'Copy draft', exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(draftText);
+        await thread.getByLabel('Follow-up question', { exact: true }).fill('Explain further');
+        await page.route('**/api/review-discussions/*/messages', route => route.fulfill({ status: 503, json: { error: 'Please retry' } }));
+        await thread.getByRole('button', { name: 'Send question', exact: true }).click();
+        await expect(thread.getByRole('alert')).toContainText('Please retry');
+        await expect(header).toHaveAttribute('aria-expanded', 'true');
+        await expect(thread.getByLabel('Follow-up question', { exact: true })).toHaveValue('Explain further');
+        await page.unroute('**/api/review-discussions/*/messages');
+        await thread.getByLabel('Follow-up question', { exact: true }).press('Control+Enter');
+        await expect(header).toHaveAttribute('aria-expanded', 'false');
+        await expect.poll(async () => (await snapshot(page)).threads[0].messages.length).toBe(4);
+        await expect(header).toHaveAttribute('aria-expanded', 'false');
+        await expandThread(thread);
+        await expect(thread.getByRole('button', { name: 'Copy draft', exact: true }).last()).toBeVisible();
+      } finally { await session.close(); }
+    });
     test('long questions and answers fit the review pane while code scrolls locally', async ({ page }, testInfo) => {
       const prose = 'Explain how this change affects the remaining references. '.repeat(24);
       const token = 'very_long_identifier_'.repeat(40);
@@ -547,6 +593,7 @@ for (const width of [390, 1440]) {
         await page.getByPlaceholder('Leave feedback...').fill(question);
         await page.getByRole('button', { name: 'Ask agent', exact: true }).click();
         const thread = main.locator('[data-discussion-id]');
+        await expandThread(thread);
         await expect(thread.getByLabel('Follow-up question', { exact: true })).toBeVisible();
         const fits = () => thread.evaluate(el => ({
           overflow: el.scrollWidth - el.clientWidth,
@@ -731,6 +778,8 @@ test('quiet answers keep waiting, finish late or cancel without losing the quest
     expect((await snapshot(page)).threads[0].messages).toHaveLength(1);
     await thread.getByRole('textbox', { name: 'Follow-up question', exact: true }).fill('Explain further');
     await thread.getByRole('button', { name: 'Send question', exact: true }).click();
+    await expect(thread.locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'false');
+    await expandThread(thread);
     await expect.poll(() => cancelled.requests().filter(r => r.method === 'thread/resume').length).toBe(1);
     cancelled.release();
     await expect(thread.getByText('Completed follow-up answer.', { exact: true })).toBeVisible();
@@ -774,6 +823,7 @@ for (const surface of ['all', 'file'] as const) {
       const added = state.threads.find((thread: { id: string }) => thread.id !== 'legacy-range');
       expect(added.anchor).toMatchObject({ lineStart: 28, lineEnd: 28, side: 'new' });
       session.release();
+      await expandThread(question);
       await expect(question).toContainText('Completed answer');
     } finally { await session.close(); }
   });

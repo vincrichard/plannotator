@@ -30,6 +30,21 @@ afterEach(async () => {
   __resetServerSessionForTests();
 });
 describe.if(typeof document !== 'undefined')('review discussions', () => {
+  test('accepted follow-ups collapse while failed sends keep the thread and draft open', async () => {
+    let fail = true;
+    await render(async (_url, options) => options && fail
+      ? Response.json({ error: 'Try again' }, { status: 503 })
+      : Response.json({ supported: true, available: true, threads: [] }));
+    await act(async () => { discussions.setThreadExpanded('one', true); discussions.setDraft('one', 'Keep this question'); });
+    await act(async () => { await expect(discussions.send('one', 'Keep this question')).rejects.toThrow('Try again'); });
+    expect(discussions.expandedThreads.one).toBe(true);
+    expect(discussions.drafts.one).toBe('Keep this question');
+    fail = false;
+    await act(async () => { await discussions.send('one', 'Keep this question'); });
+    expect(discussions.expandedThreads.one).toBe(false);
+    await act(async () => discussions.setThreadExpanded('one', true));
+    expect(discussions.expandedThreads.one).toBe(true);
+  });
   test('conversion recovery waits for draft resolution, preserves edits and does not resurrect deleted comments', async () => {
     const annotation: ReviewDiscussionComment = { ...anchor, id: 'discussion-one', type: 'comment', text: 'Change it', createdAt: 1 };
     const thread: ReviewDiscussion = { id: 'one', snapshotId: 'snapshot-one', anchor, messages: [], status: 'converted', createdAt: 1, updatedAt: 2, annotation };
@@ -229,7 +244,7 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     expect(bodies[1].id).toBe(bodies[0].id);
     expect(bodies[1].guideContext).toBe('Section: Shutdown');
     expect(bodies[1].codeContext).toBe('12 - | -old');
-    expect(discussions.expandedThreads[String(bodies[0].id)]).toBe(true);
+    expect(discussions.expandedThreads[String(bodies[0].id)]).toBe(false);
     expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
   });
 
@@ -278,7 +293,7 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
     await act(async () => expect(await discussions.create(anchor, 'Question')).toBe(true));
     expect(Object.keys(discussions.failedQuestions)).toHaveLength(0);
     const id = Object.keys(discussions.expandedThreads)[0];
-    expect(discussions.expandedThreads[id]).toBe(true);
+    expect(discussions.expandedThreads[id]).toBe(false);
     await act(async () => discussions.setThreadExpanded(id, false));
     await act(async () => root!.render(<Harness snapshot="snapshot-one" />));
     expect(discussions.expandedThreads[id]).toBe(false);
