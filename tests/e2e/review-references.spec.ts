@@ -550,8 +550,8 @@ for (const language of ['python', 'go'] as const) test(`${language} method contr
     await expect(viewer.locator('[data-expand-method]')).toBeVisible();
     await page.screenshot({ path: join(proofDir, `method-context-${language}.png`) });
     // Keep the whole expanded method in the virtualized window for line assertions.
-    await page.setViewportSize({ width: 1600, height: 9000 });
     await viewer.locator('[data-expand-method]').click();
+    await page.setViewportSize({ width: 1600, height: 9000 });
     // The signature, a previously hidden middle line and final body line are now present.
     await expect(page.locator(`diffs-container [data-additions] [data-line="${signatureLine}"]`).filter({ hasText: signature })).toHaveCount(1);
     await expect(page.locator('diffs-container [data-additions] [data-line="150"]').filter({ hasText: middle })).toHaveCount(1);
@@ -820,5 +820,33 @@ for (const singleFile of [false, true]) test(`search result navigation keeps the
     }
     await search.fill('no_matching_word');
     await expect(page.locator('diffs-container mark[data-review-search-match]')).toHaveCount(0);
+  } finally { await session.close(); }
+});
+
+// Revealing the first gap removes its separator. The method control must move
+// to a remaining gap, including when CodeView virtualizes the other lines.
+for (const mode of ['all', 'file'] as const) test(`native context then full method expansion in ${mode} view`, async ({ page }) => {
+  const session = await review(page, false, 60, false, true);
+  try {
+    if (mode === 'file') {
+      await page.getByRole('button', { name: 'M methods.py' }).click();
+      await page.getByRole('button', { name: 'Unified', exact: true }).click();
+    } else await page.getByText('methods.py', { exact: true }).last().scrollIntoViewIfNeeded();
+    // methods.py is the last file; unlike a button-based locator this survives expansion.
+    const viewer = mode === 'file' ? page.locator('.dv-active-group diffs-container') : page.locator('diffs-container').last();
+    const side = mode === 'file' ? 'unified' : 'additions';
+    const control = viewer.locator('[data-expand-method="Runner.run"]');
+    await expect(control).toHaveCount(1);
+    await expect(viewer.locator(`[data-${side}] [data-line="40"]`)).toHaveCount(0);
+    await viewer.locator('[data-gutter] [data-expand-index="0"] [data-expand-button]').first().click();
+    // Reveal the virtualized gaps for assertions without depending on scroll anchoring.
+    await page.setViewportSize({ width: 1440, height: 9000 });
+    await expect(viewer.locator(`[data-${side}] [data-line="40"]`)).toHaveCount(1);
+    await expect(control).toHaveCount(1);
+    await control.click();
+    await expect(viewer.locator(`[data-${side}] [data-line="150"]`)).toContainText('v125');
+    await expect(viewer.locator(`[data-${side}] [data-line="265"]`)).toContainText('return value');
+    await expect(control).toHaveCount(0);
+    await expect(viewer.locator(`[data-${side}] [data-line="330"]`)).toHaveCount(0);
   } finally { await session.close(); }
 });

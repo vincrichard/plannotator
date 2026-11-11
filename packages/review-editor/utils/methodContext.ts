@@ -74,7 +74,9 @@ export function decorateMethodContext(node: HTMLElement, instance: unknown): voi
       const start = side === 'additions' ? hunk.additionStart : hunk.deletionStart;
       const controlIndex = method.start < start ? method.hunkIndex : method.hunkIndex + 1;
       const gaps = methodExpansions(diff, side, method);
-      const firstGap = gaps.find(gap => gap.index >= controlIndex);
+      // Native expansion removes separators; keep the action on a remaining visible gap.
+      const firstGap = gaps.find(gap => gap.index >= controlIndex
+        && separators.some(separator => Number(separator.dataset.expandIndex) === gap.index));
       if (Number(separator.dataset.expandIndex) !== firstGap?.index) continue;
       const button = document.createElement('button');
       button.type = 'button';
