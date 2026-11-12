@@ -39,6 +39,7 @@ function FileChip({
   active: boolean;
   onClick: () => void;
 }) {
+  const { renderFileBadges } = useGuideHost();
   const slash = filePath.lastIndexOf('/');
   const name = slash >= 0 ? filePath.slice(slash + 1) : filePath;
   const dir = slash >= 0 ? filePath.slice(0, slash) : '';
@@ -52,6 +53,7 @@ function FileChip({
       title={summary ? `${filePath}\n\n${summary}` : filePath}
     >
       <span className="truncate font-mono text-[11px] font-medium text-foreground">{name}{location && <span className="ml-1 font-normal text-muted-foreground">{location}</span>}</span>
+      {renderFileBadges?.(filePath)}
       {dir && <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/60">{dir}</span>}
       {!file ? (
         <span className="flex-shrink-0 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50">outdated</span>

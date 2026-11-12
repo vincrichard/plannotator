@@ -341,7 +341,7 @@ test('questions run separately while reviewing; only converted requests enter pe
     await expect(page.getByRole('heading', { name: 'Discussions', exact: true })).toHaveCount(0);
     await expect(page.getByTitle('Ask agent', { exact: true })).toHaveCount(0);
     await expect.poll(async () => (await snapshot(page)).threads.length).toBe(1);
-    const questionBadge = page.locator('.file-tree-item').filter({ hasText: 'main.ts' }).getByLabel('1 unresolved question', { exact: true });
+    const questionBadge = page.locator('.file-tree-item').filter({ hasText: 'main.ts' }).getByLabel(/^1 unresolved question:/);
     await expect(questionBadge).toBeVisible();
 
     // Selecting an unchanged reference while the first question runs must retain that question's old-side anchor.

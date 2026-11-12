@@ -103,14 +103,17 @@ describe.if(typeof document !== 'undefined')('review discussions', () => {
       if (options) threads = threads.map(t => _url.endsWith('/' + t.id) ? { ...t, status: JSON.parse(String(options.body)).action === 'resolve' ? 'resolved' : 'converted' } : t);
       return Response.json({ supported: true, available: true, threads });
     });
-    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="2 unresolved questions"]')).not.toBeNull();
-    expect(host!.querySelector('[data-file="other.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label^="2 unresolved questions:"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="other.ts"] [aria-label^="1 unresolved question:"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="unchanged.ts"] span[aria-label]')!.classList.contains('text-orange-600')).toBe(true);
+    expect(host!.querySelector('[data-file="unchanged.ts"] span[aria-label]')!.getAttribute('title')).toContain('1 answered, 1 answering');
     await act(async () => { await discussions.update('one', 'resolve'); });
-    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="unchanged.ts"] span[aria-label]')!.classList.contains('text-muted-foreground')).toBe(true);
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label^="1 unresolved question:"]')).not.toBeNull();
     await act(async () => { await discussions.update('running', 'convert', 'Change it'); });
     expect(host!.querySelector('[data-file="unchanged.ts"]')!.textContent).toBe('');
     await act(async () => root!.render(<Harness snapshot="snapshot-two" />));
-    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label="1 unresolved question"]')).not.toBeNull();
+    expect(host!.querySelector('[data-file="unchanged.ts"] [aria-label^="1 unresolved question:"]')).not.toBeNull();
     expect(host!.querySelector('[data-file="other.ts"]')!.textContent).toBe('');
   });
 

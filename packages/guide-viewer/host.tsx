@@ -62,6 +62,8 @@ export interface GuideDiffRendererContext {
 export interface GuideHostValue<P extends object = Record<string, unknown>> {
   /** Host-supplied rich prose renderer; lightweight hosts retain the default formatting. */
   renderExplanation?: (markdown: string) => React.ReactNode;
+  /** Optional review activity beside file names; portable guides have no live feedback. */
+  renderFileBadges?: (filePath: string) => React.ReactNode;
   /** Hidden in-app guides retain state without taking keyboard/search focus. */
   active?: boolean;
   /** Every file of the review the guide describes. Guide refs resolve against this list. */

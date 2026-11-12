@@ -147,13 +147,19 @@ export const AnnotationBadge: React.FC<{ count: number }> = ({ count }) => {
 /** Open discussions count once per thread, including answers awaiting resolution. */
 export const QuestionBadge: React.FC<{ filePath: string }> = ({ filePath }) => {
   const discussions = useReviewDiscussions();
-  const count = discussions?.threads.filter(thread =>
+  const threads = discussions?.threads.filter(thread =>
     thread.snapshotId === discussions.snapshotId && thread.anchor.filePath === filePath
-    && thread.status !== 'resolved' && thread.status !== 'converted').length ?? 0;
+    && thread.status !== 'resolved' && thread.status !== 'converted') ?? [];
+  const count = threads.length;
   if (!count) return null;
   const label = `${count} unresolved question${count === 1 ? '' : 's'}`;
+  const answered = threads.filter(thread => thread.status === 'answered').length;
+  const answering = threads.filter(thread => thread.status === 'answering').length;
+  const failed = count - answered - answering;
+  const title = `${label}: ${answered} answered, ${answering} answering${failed ? `, ${failed} failed` : ''}`;
+  const color = answered ? 'text-orange-600 dark:text-orange-400' : answering ? 'text-muted-foreground' : 'text-primary';
   return (
-    <span className="flex items-center gap-0.5 text-[10px] text-primary flex-shrink-0" title={label} aria-label={label}>
+    <span className={`flex items-center gap-0.5 text-[10px] flex-shrink-0 ${color}`} title={title} aria-label={title}>
       <QuestionMarkIcon />
       {count}
     </span>

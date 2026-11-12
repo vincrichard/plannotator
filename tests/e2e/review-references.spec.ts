@@ -783,18 +783,28 @@ for (const state of ['done', 'running'] as const) {
 }
 
 
-test('guided questions carry only the current chapter and selected code context', async ({ page }) => {
+test('guided questions retain chapter context and file badges follow comments and answer status', async ({ page }) => {
   let submitted: Record<string, any> | undefined;
+  let status = 'answering';
   await page.route('**/api/review-discussions', async route => {
     if (route.request().method() === 'POST') {
       submitted = route.request().postDataJSON();
       await route.fulfill({ status: 201, json: { thread: {} } });
-    } else await route.fulfill({ json: { supported: true, available: true, version: 1, threads: [] } });
+    } else await route.fulfill({ json: { supported: true, available: true, version: 1, threads: submitted ? [{
+      id: submitted.id, snapshotId: submitted.snapshotId, anchor: submitted.anchor, status,
+      createdAt: 1, updatedAt: status === 'answering' ? 1 : 2,
+      messages: [{ id: 'q', role: 'user', text: submitted.text, createdAt: 1 },
+        ...(status === 'answered' ? [{ id: 'a', role: 'assistant', text: 'Here is the explanation.', createdAt: 2 }] : [])],
+    }] : [] } });
   });
   const session = await review(page, false, 60, true, false, 1000, true);
   try {
     const block = page.locator('[data-guide-block="a-main.ts"]');
     await block.scrollIntoViewIfNeeded();
+    await selectLine(page, block.locator('diffs-container'), 2, 'additions');
+    await comment(page, 'Keep this change clear.');
+    const chip = page.getByRole('button').filter({ hasText: /^a-main\.ts/ });
+    await expect(chip.getByTitle('1 annotation', { exact: true })).toBeVisible();
     await selectLine(page, block.locator('diffs-container'), 2, 'additions');
     await page.locator('.review-toolbar').getByRole('button', { name: 'Ask agent', exact: true }).click();
     await page.getByPlaceholder('Ask about this code...').fill('Why is this caller changing?');
@@ -807,6 +817,28 @@ test('guided questions carry only the current chapter and selected code context'
     expect(submitted?.guideContext).not.toContain('Read each part of the added file.');
     expect(submitted?.codeContext).toContain('- 2 | +export const main = widget(10);');
     expect(JSON.stringify(submitted).length).toBeLessThan(4000);
+    const question = chip.getByLabel(/^1 unresolved question:/);
+    await expect(question).toHaveClass(/text-muted-foreground/);
+    await expect(question).toHaveAttribute('title', /0 answered, 1 answering/);
+    const pendingColor = await question.evaluate(el => getComputedStyle(el).color);
+    status = 'answered';
+    await expect(question).toHaveClass(/text-orange-600/);
+    await expect(question).toHaveAttribute('title', /1 answered, 0 answering/);
+    await expect.poll(() => question.evaluate(el => getComputedStyle(el).color)).not.toBe(pendingColor);
+    for (const width of [1600, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await chip.scrollIntoViewIfNeeded();
+      await expect(question).toBeVisible();
+      await expect(chip.getByTitle('1 annotation', { exact: true })).toBeVisible();
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.getByRole('button', { name: 'Go back', exact: true }).click();
+    const treeQuestion = page.locator('.file-tree-item').filter({ hasText: 'a-main.ts' }).getByLabel(/^1 unresolved question:/);
+    await expect(treeQuestion).toHaveClass(/text-orange-600/);
+    status = 'answering';
+    await expect(treeQuestion).toHaveClass(/text-muted-foreground/);
+    status = 'resolved';
+    await expect(treeQuestion).toHaveCount(0);
   } finally { await session.close(); }
 });
 

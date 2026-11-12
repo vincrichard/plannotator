@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { GuideHostProvider, type GuideDiffRendererContext, type GuideHostValue } from '@plannotator/guide-viewer/host';
 import { DiscussionMarkdown } from '../DiscussionResponse';
+import { AnnotationBadge, QuestionBadge } from '../FileRowBits';
 import { useReviewState } from '../../dock/ReviewStateContext';
 import { AllFilesCodeView, type AllFilesCodeViewProps } from '../AllFilesCodeView';
 
@@ -29,6 +30,14 @@ type InAppRendererProps = Omit<
 
 export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactNode }> = ({ active, children }) => {
   const state = useReviewState();
+
+  const annotationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const annotation of state.allAnnotations) {
+      counts.set(annotation.filePath, (counts.get(annotation.filePath) ?? 0) + 1);
+    }
+    return counts;
+  }, [state.allAnnotations]);
 
   const getDiffRendererProps = useCallback(
     ({ focused, blockId, contextOnly, guideContext }: GuideDiffRendererContext): InAppRendererProps => ({
@@ -90,11 +99,15 @@ export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactN
       DiffRenderer: AllFilesCodeView,
       getDiffRendererProps,
       renderExplanation: text => <DiscussionMarkdown text={text} />,
+      renderFileBadges: filePath => <>
+        <AnnotationBadge count={annotationCounts.get(filePath) ?? 0} />
+        <QuestionBadge filePath={filePath} />
+      </>,
       revealFile: state.guideRevealFile,
       onRevealFile: state.onGuideRevealFile,
       activeSearchMatch: active ? state.allFilesActiveSearchMatch : null,
     }),
-    [active, state.files, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch],
+    [active, state.files, annotationCounts, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch],
   );
 
   return <GuideHostProvider value={value}>{children}</GuideHostProvider>;
