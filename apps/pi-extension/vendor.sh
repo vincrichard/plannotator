@@ -99,7 +99,7 @@ done
 # shared-package import rewrites as tour-review above, plus its own
 # marker-review import (guide's marker-engine support reuses marker-review.ts's
 # nonce/extraction primitives, same as review.ts does).
-for f in guide-review guide-block-authoring; do
+for f in guide-review guide-block-authoring prompt-files; do
   src="../../packages/server/guide/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/server/guide/%s.ts\n' "$f" | cat - "$src" \
     | sed 's|from "\.\./vcs"|from "./review-core.ts"|' \
@@ -115,6 +115,7 @@ for f in guide-review guide-block-authoring; do
     | sed 's|from "@plannotator/shared/guide-prompt"|from "./guide-prompt.ts"|' \
     | sed "s|from ['\"]@plannotator/core/\\([^'\"]*\\)['\"]|from './\\1.ts'|g" \
     | sed "s|from ['\"]@plannotator/shared/guide['\"]|from './guide.ts'|g" \
+    | sed "s|from ['\"]@plannotator/shared/data-dir['\"]|from './data-dir.ts'|g" \
     > "generated/$f.ts"
 done
 

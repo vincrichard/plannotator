@@ -946,3 +946,33 @@ test('guided explanations render tables, emphasis and Mermaid using the editable
     }
   } finally { await session.close(); }
 });
+
+
+for (const guided of [false, true]) test(`mobile file header saves viewed state in ${guided ? 'guided' : 'regular'} review`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  const session = await review(page, false, 60, guided, false, 900, guided);
+  try {
+    const scope = guided ? page.locator('[data-guide-block="a-main.ts"]') : page.locator('body');
+    const mark = scope.getByRole('button', { name: 'Mark file as viewed', exact: true }).first();
+    await mark.scrollIntoViewIfNeeded();
+    await expect(mark).toBeVisible();
+    expect(await mark.textContent()).toBe('');
+    const box = await mark.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    await mark.tap();
+    const progress = () => page.evaluate(async () => {
+      const { snapshotId } = await (await fetch('/api/diff')).json();
+      return (await fetch('/api/review-progress?snapshot=' + encodeURIComponent(snapshotId))).json();
+    });
+    await expect.poll(async () => (await progress()).viewedFiles).toContain('a-main.ts');
+    await page.reload();
+    const unmark = scope.getByRole('button', { name: 'Mark file as not viewed', exact: true }).first();
+    await expect(unmark).toHaveAttribute('aria-pressed', 'true');
+    await unmark.scrollIntoViewIfNeeded();
+    await unmark.tap();
+    await expect.poll(async () => (await progress()).viewedFiles).not.toContain('a-main.ts');
+  } finally { await context.close(); await session.close(); }
+});

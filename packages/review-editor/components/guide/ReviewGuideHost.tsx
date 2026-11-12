@@ -66,7 +66,7 @@ export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactN
       onAddFileCommentForFile: state.onAddFileCommentForFile,
       viewedFiles: state.viewedFiles,
       onToggleViewed: contextOnly ? undefined : state.onToggleViewed,
-      showViewedControls: blockId ? false : state.showViewedControls,
+      showViewedControls: state.showViewedControls && (!blockId || state.isCompactTouchLayout),
       stagedFiles: state.stagedFiles,
       onStage: state.onStage,
       canStageFiles: contextOnly ? false : state.canStageFiles,

@@ -124,7 +124,9 @@ describe.if(hasDom)('FileHeader edit affordance (DOM)', () => {
     expect(el.querySelector('[data-testid="edit-session-cancel"]')).toBeNull();
   });
 
-  test('compact touch header keeps the file identity and removes desktop-only file actions', async () => {
+  test('compact touch header toggles viewed without collapsing the file and hides desktop-only actions', async () => {
+    let toggled = 0;
+    let collapsed = 0;
     const longPath = 'packages/review-editor/components/ExtremelyDescriptiveMobileFilename.tsx';
     const el = await mount(
       <FileHeader
@@ -132,7 +134,8 @@ describe.if(hasDom)('FileHeader edit affordance (DOM)', () => {
         filePath={longPath}
         compactTouchLayout
         status="modified"
-        onToggleViewed={() => {}}
+        onToggleViewed={() => { toggled++; }}
+        onCollapseToggle={() => { collapsed++; }}
         onStage={() => {}}
         canStage
         onFileComment={() => {}}
@@ -148,7 +151,17 @@ describe.if(hasDom)('FileHeader edit affordance (DOM)', () => {
     expect(compactPath?.className).toContain('[direction:rtl]');
     expect(header.textContent).toContain('+1');
     expect(header.textContent).toContain('-1');
-    expect(Array.from(header.querySelectorAll('button')).map((button) => button.getAttribute('aria-label'))).toEqual(['Collapse diff']);
+    expect(Array.from(header.querySelectorAll('button')).map((button) => button.getAttribute('aria-label'))).toEqual(['Collapse diff', 'Mark file as viewed']);
+    const viewed = header.querySelector<HTMLButtonElement>('[aria-label="Mark file as viewed"]')!;
+    expect(viewed.textContent).toBe('');
+    expect(viewed.getAttribute('aria-pressed')).toBe('false');
+    await act(async () => viewed.click());
+    expect(toggled).toBe(1);
+    expect(collapsed).toBe(0);
+    await act(async () => root!.render(<FileHeader {...baseProps} compactTouchLayout isViewed onToggleViewed={() => {}} />));
+    expect(el.querySelector('[aria-label="Mark file as not viewed"]')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => root!.render(<FileHeader {...baseProps} compactTouchLayout showViewedControl={false} onToggleViewed={() => {}} />));
+    expect(el.querySelector('[aria-pressed]')).toBeNull();
     expect(header.querySelector('[data-testid="edit-session-start"]')).toBeNull();
   });
 });

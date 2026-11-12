@@ -11,7 +11,7 @@
 > - **Review activity badges:** Show comments and questions beside guided files; question badges turn gray while answering and orange when ready.
 > - **Guided navigation:** Cmd/Ctrl-click a symbol to inspect its definition, then return to your previous guide position.
 > - **Saved review state:** Preserve supported review snapshots, comments, unfinished drafts, discussions and viewed marks across suspension.
-> - **Mobile improvements:** Easier touch commenting, readable discussion threads and a way to leave guided mode on mobile.
+> - **Mobile improvements:** Easier touch commenting, compact viewed toggles, readable discussion threads and a way to leave guided mode on mobile.
 > - **Companion launcher:** The [launcher repository](https://github.com/vincrichard/plannotator-launcher) adds a newest-first dashboard, close/resume controls and cached application assets.
 
 <p align="center">

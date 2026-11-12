@@ -173,8 +173,33 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
 
   const stageLabel = isVeryTight ? '' : isCompact ? (isStaging ? 'Adding' : isStaged ? 'Added' : 'Add') : (isStaging ? 'Adding...' : isStaged ? 'Added' : 'Git Add');
   const commentLabel = isVeryTight ? '' : 'Comment';
-  const viewedLabel = isVeryTight ? '' : 'Viewed';
+  const viewedLabel = isCompactTouchLayout || isVeryTight ? '' : 'Viewed';
   const { additions, deletions } = React.useMemo(() => countChanges(patch), [patch]);
+
+  const viewedControl = showViewedControl && onToggleViewed && (
+    <button
+      onClick={onToggleViewed}
+      aria-label={isViewed ? "Mark file as not viewed" : "Mark file as viewed"}
+      aria-pressed={isViewed}
+      className={`text-xs rounded transition-colors flex items-center ${isCompactTouchLayout ? 'h-11 w-11 shrink-0 justify-center' : viewedLabel ? 'gap-1 px-2 py-1' : 'px-1.5 py-1'} ${
+        isViewed
+          ? 'bg-success/15 text-success'
+          : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+      }`}
+      title={isCompactTouchLayout ? (isViewed ? "Mark file as not viewed" : "Mark file as viewed") : (isViewed ? "Mark as not viewed (V)" : "Mark as viewed (V)")}
+    >
+      {isViewed ? (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      ) : (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+      )}
+      {viewedLabel && <span>{viewedLabel}</span>}
+    </button>
+  );
 
   return (
     <div
@@ -250,28 +275,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
       </div>
       {!isCompactTouchLayout && <div className={`flex flex-shrink-0 items-center pl-2 ${isCompact ? 'gap-1' : 'gap-2'}`}>
         {renderMarkdownView?.({ iconOnly: isVeryTight, touch: false })}
-        {showViewedControl && onToggleViewed && (
-          <button
-            onClick={onToggleViewed}
-            className={`text-xs rounded transition-colors flex items-center ${viewedLabel ? 'gap-1 px-2 py-1' : 'px-1.5 py-1'} ${
-              isViewed
-                ? 'bg-success/15 text-success'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-            title={isViewed ? "Mark as not viewed (V)" : "Mark as viewed (V)"}
-          >
-            {isViewed ? (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <circle cx="12" cy="12" r="9" />
-              </svg>
-            )}
-            {viewedLabel && <span>{viewedLabel}</span>}
-          </button>
-        )}
+        {viewedControl}
         {showStageControl && canStage && onStage && (
           <button
             onClick={onStage}
@@ -366,6 +370,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
         />}
       </div>}
       {isCompactTouchLayout && renderMarkdownView?.({ iconOnly: false, touch: true })}
+      {isCompactTouchLayout && viewedControl}
     </div>
   );
 };
