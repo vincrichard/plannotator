@@ -1,4 +1,5 @@
 import { createReadOnlyFork, type ForkParent } from "../read-only-fork";
+import { loadGuidePrompt } from './prompt-files';
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { analyzeGuideCoverage, type GuideCoverage } from "@plannotator/core/guide-blocks";
 import { applyGuideBlockUpdates, captureGuideContext, hydrateGuideContext, guideBlockRepairPrompt, type GuideContextSnapshot } from "./guide-block-authoring";
@@ -54,15 +55,14 @@ export const GUIDE_EMPTY_OUTPUT_ERROR = "Guide generation returned empty or malf
  * The guide methodology, optionally extended with reviewer-supplied extra
  * instructions (#1265): freeform standing preferences ("prefer product
  * vocabulary X", "never invent ticket IDs") APPENDED as a clearly delimited
- * section, never replacing the built-in organizer prompt. Absent or blank
- * instructions return GUIDE_REVIEW_PROMPT itself, byte-identical, so every
- * existing prompt path is unchanged. Text beyond
+ * section after the editable methodology (or its bundled default). Text beyond
  * GUIDE_EXTRA_INSTRUCTIONS_MAX_CHARS is truncated (hygiene bound on prompt
  * size; the launch UI caps input at the same limit).
  */
 export function composeGuideMethodology(extraInstructions?: string): string {
+  const methodology = loadGuidePrompt('guided-review', GUIDE_REVIEW_PROMPT);
   const trimmed = extraInstructions?.trim();
-  if (!trimmed) return GUIDE_REVIEW_PROMPT;
+  if (!trimmed) return methodology;
   const bounded = trimmed.length > GUIDE_EXTRA_INSTRUCTIONS_MAX_CHARS
     ? trimmed.slice(0, GUIDE_EXTRA_INSTRUCTIONS_MAX_CHARS)
     : trimmed;
@@ -76,7 +76,7 @@ export function composeGuideMethodology(extraInstructions?: string): string {
     "[marker tag removed]",
   );
   return [
-    GUIDE_REVIEW_PROMPT,
+    methodology,
     "",
     "## Additional reviewer instructions",
     "The reviewer supplied these standing preferences for this guide. Apply",
@@ -216,7 +216,7 @@ export function composeGuideMarkerPrompt(userMessage: string, nonce: string, ext
 
 /** System framing shared verbatim across all three repair engine paths. */
 function buildGuideRepairFraming(): string {
-  return "The JSON below was produced for the schema that follows but is malformed or structurally invalid. Output ONLY the corrected JSON. Fix structure and syntax; NEVER change the content: titles, overviews, file paths, summaries stay exactly as written unless syntactically impossible. If a required field is missing from the payload (e.g. a diff entry's summary), fill it with an empty string; never invent content.";
+  return loadGuidePrompt('json-repair', "The JSON below was produced for the schema that follows but is malformed or structurally invalid. Output ONLY the corrected JSON. Fix structure and syntax; NEVER change the content: titles, overviews, file paths, summaries stay exactly as written unless syntactically impossible. If a required field is missing from the payload (e.g. a diff entry's summary), fill it with an empty string; never invent content.");
 }
 
 /** Repair prompt for the schema-enforced engines (Claude --json-schema,

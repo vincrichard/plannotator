@@ -7,6 +7,7 @@
 > - **Copyable agent replies:** Copy a whole response or a ready-to-paste draft; threads collapse after successful questions.
 > - **Last-turn diffs:** Review only the latest user turn that changed code, using captured Codex or Claude turn snapshots.
 > - **Focused guided reviews:** Split large changes into smaller code blocks, include repository context, and check that the guide covers the diff.
+> - **Editable guide prompts:** Customize generation and repair through [Markdown prompt files](docs/review-prompts.md), with tables and Mermaid in interactive guide explanations.
 > - **Guided navigation:** Cmd/Ctrl-click a symbol to inspect its definition, then return to your previous guide position.
 > - **Saved review state:** Preserve supported review snapshots, comments, unfinished drafts, discussions and viewed marks across suspension.
 > - **Mobile improvements:** Easier touch commenting, readable discussion threads and a way to leave guided mode on mobile.

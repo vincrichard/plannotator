@@ -32,6 +32,7 @@ import { ModeToggle } from '@plannotator/ui/components/ModeToggle';
 import { TooltipProvider } from '@plannotator/ui/components/Tooltip';
 import { readEmbeddedGuideSnapshot, type GuideSnapshot } from '@plannotator/core/guide-format';
 import { GuideSectionSkeleton, GuideViewer } from '@plannotator/guide-viewer';
+import { DiscussionMarkdown } from '@plannotator/review-editor/components/DiscussionResponse';
 import { ReadOnlyDiffRenderer, getReadOnlyDiffRendererProps } from './ReadOnlyDiffRenderer';
 import { PortableWorkerPool, preparePortableWorkerFactory } from './portablePool';
 import { HostedDownloadButton, loadHostedEncryptedSnapshot, readHostedPage } from './hosted';
@@ -126,6 +127,7 @@ function App({ snapshot, workerFactory, hosted }: { snapshot: GuideSnapshot; wor
       snapshot={snapshot}
       DiffRenderer={ReadOnlyDiffRenderer}
       getDiffRendererProps={getReadOnlyDiffRendererProps}
+      renderExplanation={text => <DiscussionMarkdown text={text} />}
       sourceLine={<SourceLine snapshot={snapshot} />}
       headerActions={headerActions}
       className="min-h-screen bg-background text-foreground"

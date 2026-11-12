@@ -108,6 +108,10 @@ Title: one descriptive line, based on the PR title when available.
 Intent: one or two sentences explaining why the changeset exists.
 Each section has a conceptual title, overview (Markdown explaining what, why,
 and relevant implications), and diffs (ordered focused code blocks).
+Use Markdown to make overviews and block summaries easy to scan: bold key
+points, lists for steps, tables for comparisons, and fenced mermaid diagrams
+for flows or relationships when they clarify the explanation. Keep diagrams
+small and explain their point in prose. Do not add visuals merely for decoration.
 A section can cross files. A file can appear in many blocks and sections.
 Supporting details start expanded; the reviewer can collapse them.
 

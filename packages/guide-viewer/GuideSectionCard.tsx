@@ -212,7 +212,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
             )}
 
             {section.overview && (
-              <div className="mt-3.5 space-y-2.5 md:flex-none">{renderMarkdownProse(section.overview, { tone: 'muted' })}</div>
+              <div className="mt-3.5 min-w-0 space-y-2.5 md:flex-none">{host.renderExplanation?.(section.overview) ?? renderMarkdownProse(section.overview, { tone: 'muted' })}</div>
             )}
 
             {section.diffs.length > 0 && (

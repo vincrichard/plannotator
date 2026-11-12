@@ -10,7 +10,7 @@ const proofDir = resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? '.local/proof/
 const definition = ':1 export function widget(value: number) {';
 const otherReference = ':2 export const next = widget(2);';
 
-async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods: boolean | 'go' = false, addedLines = 1000, guided: boolean | 'running' = false) {
+async function review(page: Page, staged = false, contextLines = 60, addedReference = false, methods: boolean | 'go' = false, addedLines = 1000, guided: boolean | 'running' | 'rich' = false) {
   const root = mkdtempSync(join(tmpdir(), 'plannotator-references-'));
   const repo = join(root, 'repo');
   mkdirSync(repo);
@@ -57,11 +57,12 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const workingOnly = widget(99);\n");
   }
   if (guided) {
+    const explanation = '**Lifecycle**\n\n| Step | Result |\n| --- | --- |\n| Start | Ready |\n\n```mermaid\nflowchart LR\n  Start --> Finish\n```';
     const guide = {
       focused: true, title: 'Reference navigation walkthrough', intent: 'Follow the calls to their implementation.',
       sections: [
-        { title: 'Callers', overview: 'Existing call sites.', diffs: ['a-main.ts', 'b-other.ts', 'c-distant.ts'].map(file => ({
-          id: file, kind: 'diff', file, oldRange: { start: 1, end: file === 'c-distant.ts' ? 3 : 2 }, newRange: { start: 1, end: file === 'a-main.ts' ? 2 : 3 },
+        { title: 'Callers', overview: guided === 'rich' ? explanation : 'Existing call sites.', diffs: ['a-main.ts', 'b-other.ts', 'c-distant.ts'].map(file => ({
+          id: file, kind: 'diff', file, ...(guided === 'rich' && file === 'a-main.ts' ? { summary: explanation } : {}), oldRange: { start: 1, end: file === 'c-distant.ts' ? 3 : 2 }, newRange: { start: 1, end: file === 'a-main.ts' ? 2 : 3 },
         })) },
         { title: 'New calls', overview: 'Read each part of the added file.', diffs: [0, 1, 2, 3].map(i => ({
           id: `part-${i}`, kind: 'diff', file: 'd-added.ts', newRange: { start: i * 250 + 1, end: Math.min((i + 1) * 250, addedLines) },
@@ -77,7 +78,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     };
     mkdirSync(join(root, 'bin'));
     writeFileSync(join(root, 'guide.json'), JSON.stringify({ type: 'result', is_error: false, structured_output: guide }));
-    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ncat >/dev/null\n' + (guided === 'running' ? 'while [ ! -f "' + join(root, 'complete-guide') + '" ]; do sleep 0.1; done\n' : '') + 'cat "' + join(root, 'guide.json') + '"\n', { mode: 0o700 });
+    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ncat >"' + join(root, 'captured-guide-prompt') + '"\n' + (guided === 'running' ? 'while [ ! -f "' + join(root, 'complete-guide') + '" ]; do sleep 0.1; done\n' : '') + 'cat "' + join(root, 'guide.json') + '"\n', { mode: 0o700 });
   }
   const ready = join(root, 'ready.jsonl');
   const child: ChildProcess = spawn(binary, ['review', repo, '--git', '--diff-type', staged ? 'staged' : 'uncommitted', '--no-git-remote-check', '--json'], {
@@ -103,6 +104,10 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
       ['plannotator-announce-agent-tool-seen', '1'],
     ].map(([name, value]) => ({ name, value, url })));
     if (guided) {
+      if (guided === 'rich') {
+        mkdirSync(join(root, 'data', 'review_prompts'), { recursive: true });
+        writeFileSync(join(root, 'data', 'review_prompts', 'guided-review.md'), 'EDITABLE_GUIDE_PROMPT: explain the lifecycle using tables and diagrams.');
+      }
       const launched = await page.request.post(new URL('/api/agents/jobs', url).href, { data: { provider: 'guide', engine: 'claude' } });
       expect(launched.ok()).toBe(true);
       const { job } = await launched.json();
@@ -118,6 +123,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     else await expect(page.locator('diffs-container').first().locator('[data-line="2"]').first()).toBeVisible();
     return {
       repo, url, output: () => stdout,
+      capturedGuidePrompt: () => readFileSync(join(root, 'captured-guide-prompt'), 'utf8'),
       completeGuide: () => writeFileSync(join(root, 'complete-guide'), ''),
       async close() {
         if (child.exitCode === null) child.kill('SIGTERM'); // This test's own review child.
@@ -887,5 +893,24 @@ test('guided full-file diff expands context and methods and returns to the focus
     await expect(context.locator('[data-gutter] [data-expand-button]').first()).toBeVisible();
     await context.locator('[data-gutter] [data-expand-button]').first().click();
     await expect(context.locator('[data-additions] [data-line="20"]')).toContainText('context');
+  } finally { await session.close(); }
+});
+
+test('guided explanations render tables, emphasis and Mermaid using the editable prompt', async ({ page }) => {
+  const session = await review(page, false, 60, true, false, 900, 'rich');
+  try {
+    expect(session.capturedGuidePrompt()).toContain('EDITABLE_GUIDE_PROMPT');
+    const block = page.locator('[data-guide-block="a-main.ts"]');
+    await expect(block.locator('table')).toHaveCount(1);
+    await expect(block.locator('strong').filter({ hasText: 'Lifecycle' })).toHaveCount(1);
+    await expect(page.locator('[data-diagram-block="mermaid"]')).toHaveCount(2);
+    for (const diagram of await page.locator('[data-diagram-block="mermaid"]').all()) {
+      await expect(diagram.locator('svg').filter({ hasText: 'Finish' })).toBeVisible();
+    }
+    for (const width of [1600, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect(block.locator('table')).toBeVisible();
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThan(2);
+    }
   } finally { await session.close(); }
 });

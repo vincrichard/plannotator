@@ -38,7 +38,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   revealTarget,
   onActivate,
 }) => {
-  const { DiffRenderer, getDiffRendererProps, active = true } = useGuideHost();
+  const { DiffRenderer, getDiffRendererProps, renderExplanation, active = true } = useGuideHost();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const scrollPositionRef = useRef(0);
   const [collapsed, setCollapsed] = useState(false);
@@ -104,9 +104,9 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
         </div>
       )}
       {summary && (
-        <p className="mb-1.5 px-1 text-xs leading-relaxed text-muted-foreground">
-          {renderInlineMarkdown(summary)}
-        </p>
+        <div className="mb-1.5 min-w-0 px-1 text-xs leading-relaxed text-muted-foreground">
+          {renderExplanation?.(summary) ?? renderInlineMarkdown(summary)}
+        </div>
       )}
 
       <div

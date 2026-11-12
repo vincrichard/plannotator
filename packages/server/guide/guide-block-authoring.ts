@@ -3,6 +3,7 @@ import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, rea
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { GUIDE_BLOCK_MAX_LINES } from '@plannotator/core/guide-blocks';
 import type { CodeGuideOutput, GuideDiffRef } from '@plannotator/shared/guide';
+import { loadGuidePrompt } from './prompt-files';
 
 const MAX_CONTEXT_BYTES = 1024 * 1024;
 const MAX_CONTEXT_FILES = 50_000;
@@ -109,8 +110,10 @@ export function applyGuideBlockUpdates(guide: CodeGuideOutput, updates: unknown)
 
 export function guideBlockRepairPrompt(guide: CodeGuideOutput, issues: unknown): string {
   return [
-    'Repair only the listed coverage or block problems in this guide. Return JSON {"updates":[{"sectionIndex":0,"block":{"id":"stable-block-id","file":"path","summary":"Explanation","kind":"diff","oldRange":{"start":1,"end":10},"newRange":{"start":1,"end":10}}}]} .',
-    'Replace an existing block by its id in the same section, or add a new id. Keep all other blocks unchanged. Split blocks exceeding 250 displayed lines into meaningful responsibilities. Include all uncovered added and deleted lines. Context excerpts must be tracked repository files unchanged since generation began; omit unverifiable context by replacing that block with a diff block. Never supply source text; the server captures it.',
+    loadGuidePrompt('block-repair', [
+      'Repair only the listed coverage or block problems in this guide. Return JSON {"updates":[{"sectionIndex":0,"block":{"id":"stable-block-id","file":"path","summary":"Explanation","kind":"diff","oldRange":{"start":1,"end":10},"newRange":{"start":1,"end":10}}}]} .',
+      'Replace an existing block by its id in the same section, or add a new id. Keep all other blocks unchanged. Split blocks exceeding 250 displayed lines into meaningful responsibilities. Include all uncovered added and deleted lines. Context excerpts must be tracked repository files unchanged since generation began; omit unverifiable context by replacing that block with a diff block. Never supply source text; the server captures it.',
+    ].join('\n')),
     'Coverage feedback:', JSON.stringify(issues), 'Current guide:', JSON.stringify(guide),
   ].join('\n');
 }

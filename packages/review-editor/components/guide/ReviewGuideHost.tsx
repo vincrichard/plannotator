@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
 import { GuideHostProvider, type GuideDiffRendererContext, type GuideHostValue } from '@plannotator/guide-viewer/host';
+import { DiscussionMarkdown } from '../DiscussionResponse';
 import { useReviewState } from '../../dock/ReviewStateContext';
 import { AllFilesCodeView, type AllFilesCodeViewProps } from '../AllFilesCodeView';
 
@@ -88,6 +89,7 @@ export const ReviewGuideHost: React.FC<{ active: boolean; children: React.ReactN
       files: state.files,
       DiffRenderer: AllFilesCodeView,
       getDiffRendererProps,
+      renderExplanation: text => <DiscussionMarkdown text={text} />,
       revealFile: state.guideRevealFile,
       onRevealFile: state.onGuideRevealFile,
       activeSearchMatch: active ? state.allFilesActiveSearchMatch : null,

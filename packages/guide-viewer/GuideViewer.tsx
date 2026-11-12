@@ -21,6 +21,7 @@ export interface GuideViewerProps<P extends object> {
   DiffRenderer: React.ComponentType<GuideDiffRendererProps & P>;
   /** Extra renderer props (a read-only host passes no-op annotation wiring). */
   getDiffRendererProps: (context: GuideDiffRendererContext) => P;
+  renderExplanation?: (markdown: string) => React.ReactNode;
   /** Optional line under the guide title naming what the guide is of (repo, PR link, engine). */
   sourceLine?: React.ReactNode;
   /** Host-provided controls rendered top-right of the guide header (e.g. a theme toggle). */
@@ -55,7 +56,7 @@ export function engineLabel(engine: string | undefined, model: string | undefine
   return model ? `${label} · ${model}` : label;
 }
 
-export function GuideViewer<P extends object>({ snapshot, DiffRenderer, getDiffRendererProps, sourceLine, headerActions, className }: GuideViewerProps<P>) {
+export function GuideViewer<P extends object>({ snapshot, DiffRenderer, getDiffRendererProps, renderExplanation, sourceLine, headerActions, className }: GuideViewerProps<P>) {
   const files = useMemo<DiffFile[]>(() => parseDiffToFiles(snapshot.review.rawPatch), [snapshot.review.rawPatch]);
   const guide = useMemo<CodeGuideData>(
     () => ({
@@ -75,8 +76,8 @@ export function GuideViewer<P extends object>({ snapshot, DiffRenderer, getDiffR
   }, []);
 
   const host = useMemo(
-    () => ({ files, DiffRenderer, getDiffRendererProps }),
-    [files, DiffRenderer, getDiffRendererProps],
+    () => ({ files, DiffRenderer, getDiffRendererProps, renderExplanation }),
+    [files, DiffRenderer, getDiffRendererProps, renderExplanation],
   );
 
   return (
