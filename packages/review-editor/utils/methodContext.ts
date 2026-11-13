@@ -7,16 +7,16 @@ const cache = new WeakMap<FileDiffMetadata, Record<Side, MethodContext[]>>();
 const expanded = new WeakMap<object, { diff: FileDiffMetadata; methods: Set<MethodContext> }>();
 
 /** Only the innermost method owning a changed line gets a control, at its first changed hunk. */
-export function changedMethods(diff: FileDiffMetadata, side: Side): MethodContext[] {
+export function changedMethods(diff: FileDiffMetadata, side: Side, includeContext = false): MethodContext[] {
   if (diff.isPartial) return [];
   const lines = side === 'additions' ? diff.additionLines : diff.deletionLines;
   const methods = methodRanges(side === 'deletions' ? diff.prevName ?? diff.name : diff.name, lines.join(''));
   const found = new Map<MethodRange, number>();
   diff.hunks.forEach((hunk, hunkIndex) => {
     for (const segment of hunk.hunkContent) {
-      if (segment.type !== 'change') continue;
+      if (segment.type !== 'change' && !includeContext) continue;
       const start = side === 'additions' ? segment.additionLineIndex : segment.deletionLineIndex;
-      const count = side === 'additions' ? segment.additions : segment.deletions;
+      const count = segment.type === 'context' ? segment.lines : side === 'additions' ? segment.additions : segment.deletions;
       for (let line = start + 1; line <= start + count; line++) {
         const method = methods.filter(method => method.start <= line && method.end >= line)
           .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
@@ -44,7 +44,7 @@ export function methodExpansions(diff: FileDiffMetadata, side: Side, method: Met
 }
 
 /** Enhance native separators in both FileDiff and CodeView; never replace their normal controls. */
-export function decorateMethodContext(node: HTMLElement, instance: unknown): void {
+export function decorateMethodContext(node: HTMLElement, instance: unknown, includeContext = false): void {
   if (!(instance instanceof FileDiff) || !instance.fileDiff || instance.fileDiff.isPartial) return;
   const diff = instance.fileDiff;
   const root = node.shadowRoot;
@@ -54,7 +54,7 @@ export function decorateMethodContext(node: HTMLElement, instance: unknown): voi
   if (!separators.length) return;
   let contexts = cache.get(diff);
   if (!contexts) {
-    contexts = { additions: changedMethods(diff, 'additions'), deletions: changedMethods(diff, 'deletions') };
+    contexts = { additions: changedMethods(diff, 'additions', includeContext), deletions: changedMethods(diff, 'deletions', includeContext) };
     cache.set(diff, contexts);
   }
   let shown = expanded.get(instance);
@@ -92,4 +92,39 @@ export function decorateMethodContext(node: HTMLElement, instance: unknown): voi
       separator.querySelector('[data-separator-content]')?.append(button);
     }
   }
+}
+
+export interface ContextExpansion { side: Side; start: number; end: number }
+
+/** A cropped patch cannot safely use full-source line math until the reader expands it. */
+export function decorateFocusedContext(node: HTMLElement, partial: FileDiffMetadata, full: FileDiffMetadata, expand: (range: ContextExpansion) => void): void {
+  const root = node.shadowRoot;
+  const gutter = partial.type === 'new' ? '[data-gutter]:not([data-deletions])' : '[data-gutter]:not([data-additions])';
+  const separator = root?.querySelector<HTMLElement>(`${gutter} [data-separator] [data-separator-content]`);
+  const hunk = partial.hunks[0];
+  if (!separator || !hunk) return;
+  // Added files have no old column; Pierre hides the duplicate new-column controls.
+  if (partial.type === 'new') separator.style.display = 'flex';
+  separator.querySelectorAll('[data-focused-expansion]').forEach(button => button.remove());
+  const side = hunk.additionCount ? 'additions' : 'deletions';
+  const start = side === 'additions' ? hunk.additionStart : hunk.deletionStart;
+  const end = start + (side === 'additions' ? hunk.additionCount : hunk.deletionCount) - 1;
+  const add = (label: string, range: ContextExpansion, method?: string) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.focusedExpansion = '';
+    if (method) button.dataset.expandMethod = method;
+    else button.dataset.expandButton = '';
+    button.textContent = method ? `Expand ${method}` : '↑';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.style.cssText = 'font:inherit;color:inherit;background:transparent;border:0;padding:0 8px;cursor:pointer;text-decoration:underline;display:flex';
+    button.onclick = event => { event.stopPropagation(); expand(range); };
+    separator.append(button);
+  };
+  if (start > 1) add('Show previous 20 lines', { side, start: Math.max(1, start - 20), end: start - 1 });
+  const lines = side === 'additions' ? full.additionLines : full.deletionLines;
+  const method = methodRanges(full.name, lines.join('')).filter(method => method.start <= end && method.end >= start)
+    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+  if (method) add(`Show the entire ${method.name} method, lines ${method.start}–${method.end}`, { ...method, side }, method.name);
 }

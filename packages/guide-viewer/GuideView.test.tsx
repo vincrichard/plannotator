@@ -563,7 +563,7 @@ describe('Focused guide blocks', () => {
     expect(host!.textContent).toContain('Unchanged context');
     const contextProps = latestCodeViewProps.find(props => (props.files as DiffFile[])[0]?.path === 'unchanged-entry.ts')!;
     expect(contextProps.sourceSide).toBe('new');
-    expect(contextProps.contextExpansionAvailable).toBe(false);
+    expect(contextProps.contextExpansionAvailable).toBeUndefined();
     expect((contextProps.files as DiffFile[])[0].patch).toContain('@@ -42,2 +42,2 @@');
     expect((contextProps.files as DiffFile[])[0].patch).toContain(' startTask();');
   });

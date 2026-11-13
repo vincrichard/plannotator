@@ -46,6 +46,9 @@ export interface GuideDiffRendererProps {
   allowScrollChaining: true;
   /** Focused excerpts must not be replaced by live full-file augmentation. */
   contextExpansionAvailable?: boolean;
+  /** Complete patch used to expand a cropped block only after an explicit action. */
+  contextExpansionPatch?: string;
+  onExpandContext?: () => void;
   /** An unchanged repository excerpt anchors all interactions to current source. */
   sourceSide?: 'new';
 }

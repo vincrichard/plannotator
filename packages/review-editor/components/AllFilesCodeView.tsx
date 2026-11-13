@@ -2,7 +2,7 @@ import { inlineAnnotationLine } from '../utils/annotationRange';
 import { useDiscussionAnnotations, useReviewDiscussions } from '../hooks/useReviewDiscussions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { DEFAULT_CODE_VIEW_FILE_METRICS, getSingularPatch, processFile } from '@pierre/diffs';
+import { FileDiff, DEFAULT_CODE_VIEW_FILE_METRICS, getSingularPatch, processFile } from '@pierre/diffs';
 import type {
   CodeViewItem,
   CodeViewLineSelection,
@@ -24,7 +24,8 @@ import type {
   DiffAnnotationMetadata,
   TokenAnnotationMeta,
 } from '@plannotator/ui/types';
-import { decorateMethodContext } from '../utils/methodContext';
+import { decorateMethodContext, decorateFocusedContext, methodExpansions, type ContextExpansion } from '../utils/methodContext';
+import { patchAgreesWithContent } from '../utils/markdownPreview';
 import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { usePierreTheme } from '../hooks/usePierreTheme';
 import { useIsWorkerPoolReadyOrDisabled, useWorkerPoolThemeSync } from '../workerPool';
@@ -196,6 +197,8 @@ export interface AllFilesCodeViewProps {
    *  patch review): the augmentation stage completes as a no-op instead of
    *  firing a /api/file-content request the server answers 400. */
   contextExpansionAvailable?: boolean;
+  contextExpansionPatch?: string;
+  onExpandContext?: () => void;
   /** Repository context excerpts represent current source even on the old gutter. */
   sourceSide?: 'new';
   /**
@@ -646,6 +649,8 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   reviewBase,
   reviewSnapshotId,
   contextExpansionAvailable = true,
+  contextExpansionPatch,
+  onExpandContext,
   sourceSide,
   renderImagePreview,
   markdownPreview,
@@ -1471,7 +1476,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   const augmentRef = useRef<
     Map<
       string,
-      { status: 'pending' | 'done' | 'error'; controller: AbortController; generation: string }
+      { status: 'pending' | 'done' | 'error'; controller: AbortController; generation: string; focusedDiff?: FileDiffMetadata }
     >
   >(new Map());
   // reviewBase / itemIdToFile / fileSetKey read through refs so the stable
@@ -1481,6 +1486,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   reviewBaseRef.current = reviewBase;
   const reviewSnapshotIdRef = useRef(reviewSnapshotId);
   reviewSnapshotIdRef.current = reviewSnapshotId;
+  const focusedContextRef = useRef({ patch: contextExpansionPatch, sourceSide });
+  focusedContextRef.current = { patch: contextExpansionPatch, sourceSide };
+  const pendingContextRef = useRef<{ path: string; patch: string; range: ContextExpansion } | null>(null);
   const contextExpansionAvailableRef = useRef(contextExpansionAvailable);
   contextExpansionAvailableRef.current = contextExpansionAvailable;
   const itemIdToFileRef = useRef(itemIdToFile);
@@ -1598,7 +1606,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     // Read-only hosts have no review server: leave the raw-patch context in
     // place and mark the item done so it never re-fires (no dead requests,
     // no console noise from a CSP that blocks connect-src).
-    if (readOnlyRef.current || !contextExpansionAvailableRef.current) {
+    if (readOnlyRef.current || (!contextExpansionAvailableRef.current && !focusedContextRef.current.patch)) {
       augmentState.set(itemId, { status: 'done', controller, generation });
       return;
     }
@@ -1624,6 +1632,8 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     const snapshot = reviewSnapshotIdRef.current;
     if (snapshot) params.set('snapshot', snapshot);
 
+    const focused = focusedContextRef.current;
+    const expansionPatch = focused.patch ?? file.patch;
     fetch(`/api/file-content?${params}`, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { oldContent: string | null; newContent: string | null } | null) => {
@@ -1636,6 +1646,17 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           return;
         }
 
+        if (focused.sourceSide === 'new') {
+          if (data.newContent == null || !patchAgreesWithContent(file.patch, data.newContent, 'new')) {
+            augmentState.set(itemId, { status: 'done', controller, generation });
+            return;
+          }
+          data = { oldContent: data.newContent, newContent: data.newContent };
+        }
+
+        if (focused.patch && file.status === 'added' && data.oldContent == null) data.oldContent = '';
+        if (focused.patch && file.status === 'deleted' && data.newContent == null) data.newContent = '';
+
         // Stale-content guard: the file may have changed on disk since this
         // diff was captured (an agent editing/committing mid-review is normal
         // usage). Augmenting with contents that no longer reconcile with the
@@ -1643,7 +1664,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         // virtualization then fails layout estimation for the item ("trailing
         // context mismatch", content disappearing while scrolling). Keep the
         // raw-patch view for this file instead; a diff refresh re-augments.
-        if (!isContentConsistentWithPatch(file.patch, data.oldContent, data.newContent)) {
+        if (!isContentConsistentWithPatch(expansionPatch, data.oldContent, data.newContent)
+          || (focused.patch && ((data.oldContent != null && !patchAgreesWithContent(expansionPatch, data.oldContent, 'old'))
+            || (data.newContent != null && !patchAgreesWithContent(expansionPatch, data.newContent, 'new'))))) {
           console.warn(
             `AllFilesCodeView: skipping full-content expansion for ${file.path} — file changed since the diff was captured`,
           );
@@ -1653,7 +1676,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
 
         let augmented: FileDiffMetadata;
         try {
-          const result = processFile(file.patch, {
+          const result = processFile(expansionPatch, {
             oldFile:
               data.oldContent != null
                 ? { name: file.oldPath || file.path, contents: data.oldContent }
@@ -1707,6 +1730,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
             // Previewed: keep the hunkless diff on screen; Source swaps this in.
             fullDiffsRef.current.set(itemId, augmented);
             augmentState.set(itemId, { status: 'done', controller, generation });
+            return;
+          }
+          if (focused.patch) {
+            augmentState.set(itemId, { status: 'done', controller, generation, focusedDiff: augmented });
+            item.version = (item.version ?? 0) + 1;
+            liveHandle.updateItem(item);
             return;
           }
           item.fileDiff = augmented;
@@ -1787,7 +1816,21 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       // CodeView recycles elements across items.
       nodeToItemIdRef.current.set(node, context.id);
       augmentItem(context.id);
-      decorateMethodContext(node, _instance);
+      decorateMethodContext(node, _instance, sourceSide === 'new');
+      const focusedDiff = augmentRef.current.get(context.id)?.focusedDiff;
+      if (focusedDiff && contextExpansionPatch && onExpandContext) {
+        decorateFocusedContext(node, context.fileDiff, focusedDiff, range => {
+          pendingContextRef.current = { path: context.fileDiff.name, patch: contextExpansionPatch, range };
+          onExpandContext();
+        });
+      }
+      const pending = pendingContextRef.current;
+      if (pending && itemIdToFileRef.current.get(context.id)?.patch === pending.patch && _instance instanceof FileDiff && !_instance.fileDiff?.isPartial && _instance.fileDiff?.name === pending.path) {
+        pendingContextRef.current = null;
+        for (const gap of methodExpansions(_instance.fileDiff, pending.range.side, { ...pending.range, name: '' })) {
+          _instance.expandHunk(gap.index, gap.direction, gap.count);
+        }
+      }
       const itemId = context.id;
       requestAnimationFrame(() => applyItemHighlights(node, itemId));
     },

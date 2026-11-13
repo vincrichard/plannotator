@@ -62,3 +62,13 @@ describe('method expansion', () => {
     expect(changedMethods(diff, 'additions')).toEqual([]);
   });
 });
+
+
+test('unchanged guide excerpts can find their containing method without changing ordinary diff controls', () => {
+  const contents = 'package example\nfunc handle() {\n  run()\n}\n';
+  const diff = processFile('diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -3,1 +3,1 @@\n   run()\n', {
+    oldFile: { name: 'main.go', contents }, newFile: { name: 'main.go', contents },
+  })!;
+  expect(changedMethods(diff, 'additions')).toEqual([]);
+  expect(changedMethods(diff, 'additions', true)).toEqual([{ name: 'handle', start: 2, end: 4, hunkIndex: 0, side: 'additions' }]);
+});

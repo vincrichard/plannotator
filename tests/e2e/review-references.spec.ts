@@ -25,7 +25,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
   git('config', 'user.email', 'reference@example.invalid');
   writeFileSync(join(repo, 'a-main.ts'), "import { widget } from './helper';\nexport const main = widget(0);\n");
   writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const previous = widget(1);\n");
-  writeFileSync(join(repo, 'helper.ts'), 'export function widget(value: number) {\n  return value * 2;\n}\n');
+  writeFileSync(join(repo, 'helper.ts'), 'export function widget(value: number) {\n' + (methods && guided ? '  // unchanged method context\n'.repeat(80) : '') + '  return value * 2;\n}\n');
   const distant = "import { widget } from './helper';\nexport const setting = 1;\n" +
     Array.from({ length: contextLines }, (_, i) => contextLines > 60 && i === 499 ? 'export const middle = widget(6);\n' : `// context ${i}\n`).join('') + 'export const distant = widget(4);\n' + (contextLines > 60 ? Array.from({ length: 400 }, (_, i) => `// tail ${i}\n`).join('') : '');
   writeFileSync(join(repo, 'c-distant.ts'), distant);
@@ -57,6 +57,7 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
     writeFileSync(join(repo, 'b-other.ts'), "import { widget } from './helper';\nexport const workingOnly = widget(99);\n");
   }
   if (guided) {
+    const methodLine = methods === 'go' ? 53 : 54;
     const explanation = '**Lifecycle**\n\n| Step | Result |\n| --- | --- |\n| Start | Ready |\n\n```mermaid\nflowchart LR\n  Start --> Finish\n```';
     const guide = {
       focused: true, title: 'Reference navigation walkthrough', intent: 'Follow the calls to their implementation.',
@@ -68,11 +69,11 @@ async function review(page: Page, staged = false, contextLines = 60, addedRefere
           id: `part-${i}`, kind: 'diff', file: 'd-added.ts', newRange: { start: i * 250 + 1, end: Math.min((i + 1) * 250, addedLines) },
         })) },
         ...(methods ? [{ title: 'Method changes', overview: 'Read the changes inside the method.', diffs: [
-          { id: 'method-start', kind: 'diff', file: methodFile, oldRange: { start: 54, end: 54 }, newRange: { start: 54, end: 55 } },
-          { id: 'method-end', kind: 'diff', file: methodFile, oldRange: { start: 214, end: 214 }, newRange: { start: 215, end: 215 } },
+          { id: 'method-start', kind: 'diff', file: methodFile, oldRange: { start: methodLine, end: methodLine }, newRange: { start: methodLine, end: methodLine + 1 } },
+          { id: 'method-end', kind: 'diff', file: methodFile, oldRange: { start: methodLine + 160, end: methodLine + 160 }, newRange: { start: methodLine + 161, end: methodLine + 161 } },
         ] }] : []),
         { title: 'Implementation', overview: 'The unchanged implementation.', diffs: [{
-          id: 'implementation', kind: 'context', file: 'helper.ts', newRange: { start: 1, end: 3 },
+          id: 'implementation', kind: 'context', file: 'helper.ts', newRange: methods ? { start: 42, end: 42 } : { start: 1, end: 3 },
         }] },
       ],
     };
@@ -899,7 +900,7 @@ test('guided full-file diff expands context and methods and returns to the focus
   try {
     const block = page.locator('[data-guide-block="method-start"]');
     await block.scrollIntoViewIfNeeded();
-    await expect(block.locator('[data-expand-method]')).toHaveCount(0);
+    await expect(block.locator('[data-expand-method]')).toHaveCount(1);
     await block.getByRole('button', { name: 'Show full file diff', exact: true }).click();
     const method = block.locator('[data-expand-method="Runner.run"]');
     await expect(method).toHaveCount(1);
@@ -915,7 +916,7 @@ test('guided full-file diff expands context and methods and returns to the focus
     await expect(block.locator('[data-additions] [data-line="265"]')).toContainText('return value');
     await block.getByRole('button', { name: 'Show focused block', exact: true }).click();
     await expect(block.locator('[data-additions] [data-line="265"]')).toHaveCount(0);
-    await expect(block.locator('[data-expand-method]')).toHaveCount(0);
+    await expect(block.locator('[data-expand-method]')).toHaveCount(1);
     await expect(block.getByRole('button', { name: 'Show full file diff', exact: true })).toBeVisible();
 
     const context = page.locator('[data-guide-block="c-distant.ts"]');
@@ -975,4 +976,38 @@ for (const guided of [false, true]) test(`mobile file header saves viewed state 
     await unmark.tap();
     await expect.poll(async () => (await progress()).viewedFiles).not.toContain('a-main.ts');
   } finally { await context.close(); await session.close(); }
+});
+
+
+test('focused guided Go blocks expand previous lines and named methods without a full-file prerequisite', async ({ page }) => {
+  const session = await review(page, false, 60, true, 'go', 900, true);
+  try {
+    const block = page.locator('[data-guide-block="method-start"]');
+    await block.scrollIntoViewIfNeeded();
+    await expect(block.locator('[data-expand-method="Runner.Run"]')).toHaveCount(1);
+    await expect(block.locator('[data-additions] [data-line="22"]')).toHaveCount(0);
+    await block.locator('[data-expand-button]').first().click();
+    await expect(block.locator('[data-additions] [data-line="40"]')).toBeVisible();
+    await block.locator('[data-expand-method="Runner.Run"]').click();
+    await expect(block.locator('[data-additions] [data-line="22"]')).toContainText('func (r *Runner) Run');
+    await block.getByRole('button', { name: 'Show focused block', exact: true }).click();
+    await expect(block.locator('[data-additions] [data-line="22"]')).toHaveCount(0);
+    await block.locator('[data-expand-method="Runner.Run"]').click();
+    await expect(block.locator('[data-additions] [data-line="22"]')).toContainText('func (r *Runner) Run');
+    const context = page.locator('[data-guide-block="implementation"]');
+    await context.scrollIntoViewIfNeeded();
+    await expect(context.locator('[data-expand-method="widget"]')).toHaveCount(1);
+    await context.locator('[data-expand-method="widget"]').click();
+    await expect(context.locator('[data-unified] [data-line="1"]')).toContainText('export function widget');
+    await selectLine(page, context.locator('diffs-container'), 1, 'unified');
+    await comment(page, 'Expanded unchanged signature');
+    await expect.poll(() => annotations(page)).toContainEqual(expect.objectContaining({ filePath: 'helper.ts', lineStart: 1, side: 'new', text: 'Expanded unchanged signature' }));
+    const added = page.locator('[data-guide-block="part-1"]');
+    await added.scrollIntoViewIfNeeded();
+    await added.locator('[data-expand-button]').first().click();
+    await expect(added.locator('[data-line="1"]').first()).toBeVisible();
+    await added.getByRole('button', { name: 'Show focused block', exact: true }).click();
+    await expect(added.locator('[data-line="1"]')).toHaveCount(0);
+
+  } finally { await session.close(); }
 });
